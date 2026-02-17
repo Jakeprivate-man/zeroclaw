@@ -325,9 +325,21 @@ impl Provider for AnthropicProvider {
     ) -> anyhow::Result<String> {
         let credential = self.credential.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
-                "Anthropic credentials not set. Set ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN (setup-token)."
+                "Anthropic credentials not set. Set ANTHROPIC_API_KEY environment variable or api_key in config."
             )
         })?;
+
+        // Check for setup tokens (OAuth) which are not supported by Anthropic's API
+        if Self::is_setup_token(credential) {
+            anyhow::bail!(
+                "Anthropic setup tokens (OAuth) are not supported by the API. \
+                Please use an Anthropic API key instead.\n\n\
+                Setup tokens start with 'sk-ant-oat01-' and are obtained via 'claude setup-token'.\n\
+                API keys start with 'sk-ant-api03-' or similar and can be obtained from:\n\
+                https://console.anthropic.com/settings/keys\n\n\
+                Set the API key via ANTHROPIC_API_KEY environment variable or in config."
+            );
+        }
 
         let request = ChatRequest {
             model: model.to_string(),
@@ -367,9 +379,21 @@ impl Provider for AnthropicProvider {
     ) -> anyhow::Result<ProviderChatResponse> {
         let credential = self.credential.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
-                "Anthropic credentials not set. Set ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN (setup-token)."
+                "Anthropic credentials not set. Set ANTHROPIC_API_KEY environment variable or api_key in config."
             )
         })?;
+
+        // Check for setup tokens (OAuth) which are not supported by Anthropic's API
+        if Self::is_setup_token(credential) {
+            anyhow::bail!(
+                "Anthropic setup tokens (OAuth) are not supported by the API. \
+                Please use an Anthropic API key instead.\n\n\
+                Setup tokens start with 'sk-ant-oat01-' and are obtained via 'claude setup-token'.\n\
+                API keys start with 'sk-ant-api03-' or similar and can be obtained from:\n\
+                https://console.anthropic.com/settings/keys\n\n\
+                Set the API key via ANTHROPIC_API_KEY environment variable or in config."
+            );
+        }
 
         let (system_prompt, messages) = Self::convert_messages(request.messages);
         let native_request = NativeChatRequest {
@@ -472,6 +496,28 @@ mod tests {
     fn setup_token_detection_works() {
         assert!(AnthropicProvider::is_setup_token("sk-ant-oat01-abcdef"));
         assert!(!AnthropicProvider::is_setup_token("sk-ant-api-key"));
+    }
+
+    #[tokio::test]
+    async fn chat_fails_with_setup_token() {
+        let p = AnthropicProvider::new(Some("sk-ant-oat01-test123"));
+        let result = p
+            .chat_with_system(None, "hello", "claude-3-opus", 0.7)
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("setup tokens (OAuth) are not supported"),
+            "Expected setup token error, got: {err}"
+        );
+        assert!(
+            err.contains("sk-ant-oat01-"),
+            "Error should mention the setup token prefix, got: {err}"
+        );
+        assert!(
+            err.contains("ANTHROPIC_API_KEY"),
+            "Error should mention the correct environment variable, got: {err}"
+        );
     }
 
     #[tokio::test]

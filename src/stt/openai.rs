@@ -66,7 +66,7 @@ impl OpenAiSttProvider {
         let part = reqwest::multipart::Part::bytes(wav_data)
             .file_name("audio.wav")
             .mime_str("audio/wav")
-            .unwrap();
+            .context("Failed to create multipart part")?;
 
         let form = reqwest::multipart::Form::new()
             .part("file", part)
@@ -169,11 +169,16 @@ impl SttProvider for OpenAiSttProvider {
         // Get model
         let model = self.get_model(config);
 
+        let file_name = file_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "audio.wav".to_string());
+
         // Call API with file data
         let part = reqwest::multipart::Part::bytes(audio_data)
-            .file_name(file_path.file_name().unwrap().to_string_lossy().to_string())
+            .file_name(file_name)
             .mime_str("audio/wav")
-            .unwrap();
+            .context("Failed to create multipart part")?;
 
         let form = reqwest::multipart::Form::new()
             .part("file", part)

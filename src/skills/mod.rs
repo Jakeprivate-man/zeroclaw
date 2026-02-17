@@ -553,7 +553,12 @@ pub fn handle_command(command: crate::SkillCommands, workspace_dir: &Path) -> Re
                             .arg(&src)
                             .output();
 
-                        if junction_result.is_ok() && junction_result.unwrap().status.success() {
+                        let success = match junction_result {
+                            Ok(output) => output.status.success(),
+                            Err(_) => false,
+                        };
+
+                        if success {
                             println!(
                                 "  {} Skill linked (junction): {}",
                                 console::style("✓").green().bold(),

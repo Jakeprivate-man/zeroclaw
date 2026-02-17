@@ -78,8 +78,8 @@ impl AudioPlayback {
                         let mut sample = 0.0;
 
                         // Get the next sample from the queue
-                        let mut queue = queue_clone.lock().unwrap();
-                        let mut current = current_sample_clone.lock().unwrap();
+                        let mut queue = queue_clone.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut current = current_sample_clone.lock().unwrap_or_else(|e| e.into_inner());
 
                         while *current < queue.len() {
                             let audio = &queue[*current];
@@ -127,7 +127,7 @@ impl AudioPlayback {
 
     /// Play audio data (non-blocking, queues for playback)
     pub fn play(&self, audio: Vec<f32>) -> Result<()> {
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         queue.push(audio);
         Ok(())
     }
@@ -149,23 +149,23 @@ impl AudioPlayback {
 
     /// Check if audio is currently playing
     pub fn is_playing(&self) -> bool {
-        let queue = self.queue.lock().unwrap();
-        let current = self.current_sample.lock().unwrap();
+        let queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let current = self.current_sample.lock().unwrap_or_else(|e| e.into_inner());
         !queue.is_empty() && *current < queue.len()
     }
 
     /// Stop playback and clear the queue
     pub fn stop(&self) -> Result<()> {
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         queue.clear();
-        let mut current = self.current_sample.lock().unwrap();
+        let mut current = self.current_sample.lock().unwrap_or_else(|e| e.into_inner());
         *current = 0;
         Ok(())
     }
 
     /// Get the number of audio buffers in the queue
     pub fn queued_buffers(&self) -> usize {
-        self.queue.lock().unwrap().len()
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 }
 

@@ -101,7 +101,8 @@ impl Tool for HardwareMemoryReadTool {
             let length = args.get("length").and_then(|v| v.as_u64()).unwrap_or(128) as usize;
             let length = length.min(256).max(1);
 
-            match probe_read_memory(chip.unwrap(), address, length) {
+            let c = chip.ok_or_else(|| anyhow::anyhow!("Internal error: chip not determined"))?;
+            match probe_read_memory(c, address, length) {
                 Ok(output) => {
                     return Ok(ToolResult {
                         success: true,

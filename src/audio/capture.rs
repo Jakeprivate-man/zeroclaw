@@ -36,7 +36,7 @@ impl AudioCapture {
         let device = Self::default_input_device()?;
 
         let recorder = Arc::new(AudioRecorder::new());
-        *recorder.sample_rate.lock().unwrap() = config.sample_rate;
+        *recorder.sample_rate.lock().unwrap_or_else(|e| e.into_inner()) = config.sample_rate;
 
         let recorder_clone = Arc::clone(&recorder);
 
@@ -151,22 +151,22 @@ impl AudioRecorder {
     }
 
     fn record(&self, data: &[f32]) {
-        let mut samples = self.samples.lock().unwrap();
+        let mut samples = self.samples.lock().unwrap_or_else(|e| e.into_inner());
         samples.extend_from_slice(data);
     }
 
     fn get_audio(&self) -> Vec<f32> {
-        self.samples.lock().unwrap().clone()
+        self.samples.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     fn take_audio(&self) -> Vec<f32> {
-        let mut samples = self.samples.lock().unwrap();
+        let mut samples = self.samples.lock().unwrap_or_else(|e| e.into_inner());
         std::mem::take(&mut *samples)
     }
 
     fn duration(&self) -> f32 {
-        let samples = self.samples.lock().unwrap();
-        let rate = *self.sample_rate.lock().unwrap();
+        let samples = self.samples.lock().unwrap_or_else(|e| e.into_inner());
+        let rate = *self.sample_rate.lock().unwrap_or_else(|e| e.into_inner());
         if rate > 0 {
             samples.len() as f32 / rate as f32
         } else {
@@ -175,11 +175,11 @@ impl AudioRecorder {
     }
 
     fn is_empty(&self) -> bool {
-        self.samples.lock().unwrap().is_empty()
+        self.samples.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
     }
 
     fn clear(&self) {
-        self.samples.lock().unwrap().clear();
+        self.samples.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 }
 
@@ -213,7 +213,7 @@ impl BufferedCapture {
             .build_input_stream(
                 &stream_config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    let mut buf = buffer_clone.lock().unwrap();
+                    let mut buf = buffer_clone.lock().unwrap_or_else(|e| e.into_inner());
                     let remaining = max_samples.saturating_sub(buf.len());
                     let to_add = data.len().min(remaining);
                     buf.extend_from_slice(&data[..to_add]);
@@ -234,12 +234,12 @@ impl BufferedCapture {
 
     /// Get the current buffer contents
     pub fn get_buffer(&self) -> Vec<f32> {
-        self.buffer.lock().unwrap().clone()
+        self.buffer.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Check if the buffer is full
     pub fn is_full(&self) -> bool {
-        self.buffer.lock().unwrap().len() >= self.max_samples
+        self.buffer.lock().unwrap_or_else(|e| e.into_inner()).len() >= self.max_samples
     }
 
     /// Get the buffer capacity
@@ -249,12 +249,12 @@ impl BufferedCapture {
 
     /// Get the current buffer size
     pub fn len(&self) -> usize {
-        self.buffer.lock().unwrap().len()
+        self.buffer.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// Clear the buffer
     pub fn clear(&self) {
-        self.buffer.lock().unwrap().clear();
+        self.buffer.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 }
 

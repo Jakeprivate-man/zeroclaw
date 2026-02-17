@@ -454,7 +454,7 @@ impl Channel for EmailChannel {
                 Ok(Ok(messages)) => {
                     for (id, sender, content, ts) in messages {
                         {
-                            let mut seen = self.seen_messages.lock().unwrap();
+                            let mut seen = self.seen_messages.lock().unwrap_or_else(|e| e.into_inner());
                             if seen.contains(&id) {
                                 continue;
                             }
