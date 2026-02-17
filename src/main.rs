@@ -374,7 +374,9 @@ async fn main() -> Result<()> {
         if *interactive && *channels_only {
             bail!("Use either --interactive or --channels-only, not both");
         }
-        if *channels_only && (api_key.is_some() || provider.is_some() || memory.is_some() || runtime.is_some()) {
+        if *channels_only
+            && (api_key.is_some() || provider.is_some() || memory.is_some() || runtime.is_some())
+        {
             bail!("--channels-only does not accept --api-key, --provider, --memory, or --runtime");
         }
 

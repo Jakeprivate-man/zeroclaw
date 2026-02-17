@@ -42,10 +42,6 @@ pub mod agent;
 #[cfg(feature = "voice")]
 pub mod audio;
 pub mod channels;
-#[cfg(feature = "voice")]
-pub mod stt;
-#[cfg(feature = "voice")]
-pub mod tts;
 pub mod config;
 pub mod cost;
 pub mod cron;
@@ -68,7 +64,11 @@ pub mod runtime;
 pub mod security;
 pub mod service;
 pub mod skills;
+#[cfg(feature = "voice")]
+pub mod stt;
 pub mod tools;
+#[cfg(feature = "voice")]
+pub mod tts;
 pub mod tunnel;
 pub mod util;
 

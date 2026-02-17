@@ -229,7 +229,7 @@ impl WasmRuntime {
         let fuel_consumed = fuel_before.saturating_sub(fuel_after);
 
         Ok(WasmExecutionResult {
-            stdout: String::new(),  // No WASI stdout yet — pure computation
+            stdout: String::new(), // No WASI stdout yet — pure computation
             stderr: String::new(),
             exit_code,
             fuel_consumed,
@@ -379,7 +379,10 @@ mod tests {
         let rt = WasmRuntime::new(default_config());
         let result = rt.build_shell_command("echo hello", Path::new("/tmp"));
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("does not support shell"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("does not support shell"));
     }
 
     #[test]
@@ -391,7 +394,10 @@ mod tests {
     #[test]
     fn wasm_storage_path_with_workspace() {
         let rt = WasmRuntime::with_workspace(default_config(), PathBuf::from("/home/user/project"));
-        assert_eq!(rt.storage_path(), PathBuf::from("/home/user/project/.zeroclaw"));
+        assert_eq!(
+            rt.storage_path(),
+            PathBuf::from("/home/user/project/.zeroclaw")
+        );
     }
 
     // ── Config validation ──────────────────────────────────────

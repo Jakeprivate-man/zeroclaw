@@ -2,7 +2,10 @@
 // DEEPGRAM SPEECH-TO-TEXT PROVIDER
 // ═══════════════════════════════════════════════════════════════
 
-use super::{SttConfig, SttProvider, SttProviderType, SttResult, SttAlternative, SttWord, audio_to_wav, validate_audio_data};
+use super::{
+    audio_to_wav, validate_audio_data, SttAlternative, SttConfig, SttProvider, SttProviderType,
+    SttResult, SttWord,
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::Client;
@@ -44,10 +47,7 @@ impl DeepgramSttProvider {
 
     /// Get the model to use
     fn get_model(&self, config: &SttConfig) -> String {
-        config
-            .model
-            .clone()
-            .unwrap_or_else(|| "nova-2".to_string())
+        config.model.clone().unwrap_or_else(|| "nova-2".to_string())
     }
 
     /// Call the Deepgram API
@@ -177,10 +177,13 @@ impl SttProvider for DeepgramSttProvider {
         Ok(Self::convert_response(response, config))
     }
 
-    async fn transcribe_file(&self, file_path: &std::path::Path, config: &SttConfig) -> Result<SttResult> {
+    async fn transcribe_file(
+        &self,
+        file_path: &std::path::Path,
+        config: &SttConfig,
+    ) -> Result<SttResult> {
         // Read file
-        let audio_data = std::fs::read(file_path)
-            .context("Failed to read audio file")?;
+        let audio_data = std::fs::read(file_path).context("Failed to read audio file")?;
 
         // Get API key
         let api_key = self.get_api_key(config)?;
@@ -314,9 +317,7 @@ mod tests {
     #[test]
     fn test_deepgram_response_empty() {
         let response = DeepgramResponse {
-            results: DeepgramResults {
-                channels: vec![],
-            },
+            results: DeepgramResults { channels: vec![] },
         };
 
         let result = DeepgramSttProvider::convert_response(response, &SttConfig::default());
@@ -391,7 +392,10 @@ mod tests {
         let result = provider.transcribe(&audio, &config).await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("API key not found"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("API key not found"));
     }
 
     #[test]

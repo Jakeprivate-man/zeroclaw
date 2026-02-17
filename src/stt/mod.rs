@@ -2,15 +2,15 @@
 // STT MODULE - Speech-to-Text with multiple providers
 // ═══════════════════════════════════════════════════════════════
 
-mod openai;
-mod google;
 mod azure;
 mod deepgram;
+mod google;
+mod openai;
 
-pub use openai::OpenAiSttProvider;
-pub use google::GoogleSttProvider;
 pub use azure::AzureSttProvider;
 pub use deepgram::DeepgramSttProvider;
+pub use google::GoogleSttProvider;
+pub use openai::OpenAiSttProvider;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -120,7 +120,11 @@ pub trait SttProvider: Send + Sync {
     async fn transcribe(&self, audio_data: &[f32], config: &SttConfig) -> Result<SttResult>;
 
     /// Transcribe audio file (by path)
-    async fn transcribe_file(&self, file_path: &std::path::Path, config: &SttConfig) -> Result<SttResult>;
+    async fn transcribe_file(
+        &self,
+        file_path: &std::path::Path,
+        config: &SttConfig,
+    ) -> Result<SttResult>;
 
     /// Check if the provider is available
     async fn is_available(&self) -> bool;
@@ -196,7 +200,8 @@ impl SttEngine {
 
     /// Transcribe audio using the default provider
     pub async fn transcribe(&self, audio_data: &[f32]) -> Result<SttResult> {
-        self.transcribe_with_config(audio_data, &self.default_config).await
+        self.transcribe_with_config(audio_data, &self.default_config)
+            .await
     }
 
     /// Transcribe audio with custom configuration
@@ -534,20 +539,16 @@ mod tests {
             text: "hello world".to_string(),
             confidence: 0.95,
             language: Some("en-US".to_string()),
-            alternatives: vec![
-                SttAlternative {
-                    text: "hello word".to_string(),
-                    confidence: 0.85,
-                },
-            ],
-            words: vec![
-                SttWord {
-                    word: "hello".to_string(),
-                    start_time: 0.0,
-                    end_time: 0.5,
-                    confidence: 0.98,
-                },
-            ],
+            alternatives: vec![SttAlternative {
+                text: "hello word".to_string(),
+                confidence: 0.85,
+            }],
+            words: vec![SttWord {
+                word: "hello".to_string(),
+                start_time: 0.0,
+                end_time: 0.5,
+                confidence: 0.98,
+            }],
         };
 
         let json = serde_json::to_string(&result).unwrap();

@@ -3,15 +3,15 @@
 // ═══════════════════════════════════════════════════════════════
 
 mod capture;
-mod playback;
 mod device;
+mod playback;
 
 pub use capture::AudioCapture;
-pub use playback::AudioPlayback;
 pub use device::{
-    AudioDevice, AudioDeviceType, list_audio_devices, DeviceInfo,
-    find_input_device, find_output_device, default_input_device, default_output_device
+    default_input_device, default_output_device, find_input_device, find_output_device,
+    list_audio_devices, AudioDevice, AudioDeviceType, DeviceInfo,
 };
+pub use playback::AudioPlayback;
 
 use anyhow::{Context, Result};
 use cpal::{traits::DeviceTrait, traits::HostTrait, Device, Host, StreamConfig};
@@ -113,8 +113,7 @@ impl AudioEngine {
                 anyhow::bail!("Device listing complete");
             }
             Some(name) => Some(find_input_device(name)?),
-            None => Some(default_input_device()
-                .context("No input device available")?),
+            None => Some(default_input_device().context("No input device available")?),
         };
         Ok(())
     }
@@ -127,8 +126,7 @@ impl AudioEngine {
                 anyhow::bail!("Device listing complete");
             }
             Some(name) => Some(find_output_device(name)?),
-            None => Some(default_output_device()
-                .context("No output device available")?),
+            None => Some(default_output_device().context("No output device available")?),
         };
         Ok(())
     }
@@ -183,13 +181,13 @@ impl AudioEngine {
     where
         F: FnMut(&[f32]) + Send + 'static,
     {
-        let device = self.input_device.as_ref()
-            .context("Input device not set")?;
+        let device = self.input_device.as_ref().context("Input device not set")?;
 
         let config = self.config.to_stream_config();
 
         // Check if the config is supported
-        let supported = device.supported_input_configs()
+        let supported = device
+            .supported_input_configs()
             .context("Failed to get supported input configs")?
             .find(|c| {
                 c.channels() == config.channels as cpal::ChannelCount
@@ -206,24 +204,28 @@ impl AudioEngine {
 
         let err_fn = |err| eprintln!("Audio capture error: {}", err);
 
-        let stream = device.build_input_stream(
-            &config,
-            move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                callback(data);
-            },
-            err_fn,
-            None, // timeout
-        ).context("Failed to build input stream")?;
+        let stream = device
+            .build_input_stream(
+                &config,
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    callback(data);
+                },
+                err_fn,
+                None, // timeout
+            )
+            .context("Failed to build input stream")?;
 
         Ok(stream)
     }
 
     /// Create a new audio playback handle
     pub fn create_playback(&self) -> Result<AudioPlayback> {
-        let device = self.output_device.as_ref()
+        let _device = self
+            .output_device
+            .as_ref()
             .context("Output device not set")?;
 
-        AudioPlayback::new(device, &self.config)
+        AudioPlayback::new()
     }
 }
 
@@ -239,8 +241,7 @@ impl Default for AudioEngine {
 
 /// Find an audio device by name
 fn find_device(host: &Host, name: &str, input: bool) -> Result<Device> {
-    let devices = host.devices()
-        .context("Failed to get devices")?;
+    let devices = host.devices().context("Failed to get devices")?;
 
     for device in devices {
         let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
@@ -248,11 +249,13 @@ fn find_device(host: &Host, name: &str, input: bool) -> Result<Device> {
         if device_name.contains(name) {
             // Check if device supports the desired direction
             let has_supported = if input {
-                device.supported_input_configs()
+                device
+                    .supported_input_configs()
                     .map(|configs| configs.count() > 0)
                     .unwrap_or(false)
             } else {
-                device.supported_output_configs()
+                device
+                    .supported_output_configs()
                     .map(|configs| configs.count() > 0)
                     .unwrap_or(false)
             };
@@ -263,8 +266,11 @@ fn find_device(host: &Host, name: &str, input: bool) -> Result<Device> {
         }
     }
 
-    anyhow::bail!("Device '{}' not found or doesn't support {}",
-        name, if input { "input" } else { "output" })
+    anyhow::bail!(
+        "Device '{}' not found or doesn't support {}",
+        name,
+        if input { "input" } else { "output" }
+    )
 }
 
 /// Get the default audio host

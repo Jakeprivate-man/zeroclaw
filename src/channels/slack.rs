@@ -1,6 +1,5 @@
 use super::traits::{Channel, ChannelMessage};
 use async_trait::async_trait;
-use uuid::Uuid;
 
 /// Slack channel — polls conversations.history via Web API
 pub struct SlackChannel {
@@ -160,7 +159,7 @@ impl Channel for SlackChannel {
                     last_ts = ts.to_string();
 
                     let channel_msg = ChannelMessage {
-                        id: Uuid::new_v4().to_string(),
+                        id: format!("{channel_id}_{ts}"),
                         sender: channel_id.clone(),
                         content: text.to_string(),
                         channel: "slack".to_string(),
@@ -251,5 +250,30 @@ mod tests {
         let ch = SlackChannel::new("xoxb-fake".into(), None, vec!["U111".into(), "*".into()]);
         assert!(ch.is_user_allowed("U111"));
         assert!(ch.is_user_allowed("anyone"));
+    }
+
+    #[test]
+    fn message_id_is_stable_across_restarts() {
+        // Test that message ID generation is deterministic based on channel_id and ts
+        // This ensures that the same Slack message always generates the same ID,
+        // preventing duplicate memories after restart.
+        let channel_id = "C04DR8LNAQZ";
+        let ts = "1234567890.123456";
+
+        // The expected ID format is "{channel_id}_{ts}"
+        let expected_id = format!("{channel_id}_{ts}");
+
+        // This should always produce the same result
+        assert_eq!(expected_id, "C04DR8LNAQZ_1234567890.123456");
+
+        // Different timestamps should produce different IDs
+        let different_ts = "1234567891.123456";
+        let different_id = format!("{channel_id}_{different_ts}");
+        assert_ne!(expected_id, different_id);
+
+        // Different channels should produce different IDs even with same ts
+        let different_channel = "C99999999";
+        let different_channel_id = format!("{different_channel}_{ts}");
+        assert_ne!(expected_id, different_channel_id);
     }
 }

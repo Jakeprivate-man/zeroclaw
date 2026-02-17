@@ -4,7 +4,9 @@
 
 #![allow(non_snake_case)]
 
-use super::{SttConfig, SttProvider, SttProviderType, SttResult, audio_to_wav, validate_audio_data};
+use super::{
+    audio_to_wav, validate_audio_data, SttConfig, SttProvider, SttProviderType, SttResult,
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::Client;
@@ -66,7 +68,10 @@ impl AzureSttProvider {
             let region = self.get_region()?;
             Ok(format!("https://{region}.api.cognitive.microsoft.com/speech/recognition/conversation/cognitiveservices/v1"))
         } else {
-            Ok(format!("{}/speech/recognition/conversation/cognitiveservices/v1", self.api_base))
+            Ok(format!(
+                "{}/speech/recognition/conversation/cognitiveservices/v1",
+                self.api_base
+            ))
         }
     }
 
@@ -96,7 +101,10 @@ impl AzureSttProvider {
             .client
             .post(&url)
             .header("Ocp-Apim-Subscription-Key", api_key)
-            .header("Content-Type", "audio/wav; codecs=audio/pcm; samplerate=16000")
+            .header(
+                "Content-Type",
+                "audio/wav; codecs=audio/pcm; samplerate=16000",
+            )
             .query(&query_params)
             .body(wav_data)
             .timeout(timeout)
@@ -132,7 +140,8 @@ impl AzureSttProvider {
         let text = best_alternative.Display.clone();
         let confidence = best_alternative.Confidence;
 
-        let alternatives: Vec<super::SttAlternative> = response.NBest
+        let alternatives: Vec<super::SttAlternative> = response
+            .NBest
             .iter()
             .skip(1)
             .map(|alt| super::SttAlternative {
@@ -177,26 +186,25 @@ impl SttProvider for AzureSttProvider {
         let wav_data = audio_to_wav(audio_data, config.sample_rate);
 
         // Call API
-        let response = self
-            .call_azure_api(wav_data, &api_key, config)
-            .await?;
+        let response = self.call_azure_api(wav_data, &api_key, config).await?;
 
         // Convert response
         Ok(Self::convert_response(response, config))
     }
 
-    async fn transcribe_file(&self, file_path: &std::path::Path, config: &SttConfig) -> Result<SttResult> {
+    async fn transcribe_file(
+        &self,
+        file_path: &std::path::Path,
+        config: &SttConfig,
+    ) -> Result<SttResult> {
         // Read file
-        let audio_data = std::fs::read(file_path)
-            .context("Failed to read audio file")?;
+        let audio_data = std::fs::read(file_path).context("Failed to read audio file")?;
 
         // Get API key
         let api_key = self.get_api_key(config)?;
 
         // Call API with file data (already in WAV format)
-        let response = self
-            .call_azure_api(audio_data, &api_key, config)
-            .await?;
+        let response = self.call_azure_api(audio_data, &api_key, config).await?;
 
         // Convert response
         Ok(Self::convert_response(response, config))
@@ -293,20 +301,18 @@ mod tests {
             Duration: Some(1000000),
             PrimaryLanguage: Some("en-US".to_string()),
             Confidence: Some(0.95),
-            NBest: vec![
-                AzureNBest {
-                    Lexical: "hello world".to_string(),
-                    ITN: "hello world".to_string(),
-                    MaskedITN: "hello world".to_string(),
-                    Display: "hello world".to_string(),
-                    Confidence: 0.95,
-                    LexicalScore: None,
-                    ITNScore: None,
-                    MaskedITNScore: None,
-                    DisplayScore: None,
-                    Words: vec![],
-                },
-            ],
+            NBest: vec![AzureNBest {
+                Lexical: "hello world".to_string(),
+                ITN: "hello world".to_string(),
+                MaskedITN: "hello world".to_string(),
+                Display: "hello world".to_string(),
+                Confidence: 0.95,
+                LexicalScore: None,
+                ITNScore: None,
+                MaskedITNScore: None,
+                DisplayScore: None,
+                Words: vec![],
+            }],
         };
 
         let result = AzureSttProvider::convert_response(response, &SttConfig::default());
@@ -389,20 +395,18 @@ mod tests {
             Duration: Some(1000000),
             PrimaryLanguage: Some("en-US".to_string()),
             Confidence: Some(0.95),
-            NBest: vec![
-                AzureNBest {
-                    Lexical: "hello world".to_string(),
-                    ITN: "hello world".to_string(),
-                    MaskedITN: "hello world".to_string(),
-                    Display: "Hello world.".to_string(),
-                    Confidence: 0.95,
-                    LexicalScore: None,
-                    ITNScore: None,
-                    MaskedITNScore: None,
-                    DisplayScore: None,
-                    Words: vec![],
-                },
-            ],
+            NBest: vec![AzureNBest {
+                Lexical: "hello world".to_string(),
+                ITN: "hello world".to_string(),
+                MaskedITN: "hello world".to_string(),
+                Display: "Hello world.".to_string(),
+                Confidence: 0.95,
+                LexicalScore: None,
+                ITNScore: None,
+                MaskedITNScore: None,
+                DisplayScore: None,
+                Words: vec![],
+            }],
         };
 
         let result = AzureSttProvider::convert_response(response, &SttConfig::default());

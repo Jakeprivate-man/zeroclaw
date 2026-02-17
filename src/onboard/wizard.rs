@@ -319,7 +319,9 @@ pub fn run_quick_setup(
 
     // Validate runtime availability if WASM is chosen
     if runtime_kind_name == "wasm" && !cfg!(feature = "runtime-wasm") {
-        anyhow::bail!("WASM runtime is not available in this build. Rebuild with --features runtime-wasm");
+        anyhow::bail!(
+            "WASM runtime is not available in this build. Rebuild with --features runtime-wasm"
+        );
     }
 
     // Create memory config based on backend choice
@@ -3619,7 +3621,14 @@ fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Result<()> 
     ];
 
     // Create subdirectories
-    let subdirs = ["sessions", "memory", "state", "cron", "skills", "wasm_tools"];
+    let subdirs = [
+        "sessions",
+        "memory",
+        "state",
+        "cron",
+        "skills",
+        "wasm_tools",
+    ];
     for dir in &subdirs {
         fs::create_dir_all(workspace_dir.join(dir))?;
     }

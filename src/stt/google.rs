@@ -2,10 +2,13 @@
 // GOOGLE CLOUD SPEECH-TO-TEXT PROVIDER
 // ═══════════════════════════════════════════════════════════════
 
-use super::{SttConfig, SttProvider, SttProviderType, SttResult, SttAlternative, SttWord, audio_to_wav, validate_audio_data};
-use base64::Engine;
+use super::{
+    audio_to_wav, validate_audio_data, SttAlternative, SttConfig, SttProvider, SttProviderType,
+    SttResult, SttWord,
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use base64::Engine;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -59,10 +62,7 @@ impl GoogleSttProvider {
         model: &str,
         config: &SttConfig,
     ) -> Result<GoogleResponse> {
-        let url = format!(
-            "{}/speech:recognize?key={}",
-            self.api_base, api_key
-        );
+        let url = format!("{}/speech:recognize?key={}", self.api_base, api_key);
 
         // Build request
         let request = GoogleRequest {
@@ -189,10 +189,13 @@ impl SttProvider for GoogleSttProvider {
         Ok(Self::convert_response(response, config))
     }
 
-    async fn transcribe_file(&self, file_path: &std::path::Path, config: &SttConfig) -> Result<SttResult> {
+    async fn transcribe_file(
+        &self,
+        file_path: &std::path::Path,
+        config: &SttConfig,
+    ) -> Result<SttResult> {
         // Read file
-        let audio_data = std::fs::read(file_path)
-            .context("Failed to read audio file")?;
+        let audio_data = std::fs::read(file_path).context("Failed to read audio file")?;
 
         // Get API key
         let api_key = self.get_api_key(config)?;
@@ -340,33 +343,43 @@ mod tests {
     #[test]
     fn test_google_response_with_transcript() {
         let response = GoogleResponse {
-            results: vec![
-                GoogleSpeechResult {
-                    alternatives: vec![
-                        GoogleSpeechAlternative {
-                            transcript: "hello world".to_string(),
-                            confidence: Some(0.95),
-                            words: vec![
-                                GoogleWord {
-                                    word: "hello".to_string(),
-                                    start_time: Some(GoogleDuration { seconds: 0, nanos: 0 }),
-                                    end_time: Some(GoogleDuration { seconds: 0, nanos: 500_000_000 }),
-                                },
-                                GoogleWord {
-                                    word: "world".to_string(),
-                                    start_time: Some(GoogleDuration { seconds: 0, nanos: 500_000_000 }),
-                                    end_time: Some(GoogleDuration { seconds: 1, nanos: 0 }),
-                                },
-                            ],
-                        },
-                        GoogleSpeechAlternative {
-                            transcript: "hello word".to_string(),
-                            confidence: Some(0.85),
-                            words: vec![],
-                        },
-                    ],
-                },
-            ],
+            results: vec![GoogleSpeechResult {
+                alternatives: vec![
+                    GoogleSpeechAlternative {
+                        transcript: "hello world".to_string(),
+                        confidence: Some(0.95),
+                        words: vec![
+                            GoogleWord {
+                                word: "hello".to_string(),
+                                start_time: Some(GoogleDuration {
+                                    seconds: 0,
+                                    nanos: 0,
+                                }),
+                                end_time: Some(GoogleDuration {
+                                    seconds: 0,
+                                    nanos: 500_000_000,
+                                }),
+                            },
+                            GoogleWord {
+                                word: "world".to_string(),
+                                start_time: Some(GoogleDuration {
+                                    seconds: 0,
+                                    nanos: 500_000_000,
+                                }),
+                                end_time: Some(GoogleDuration {
+                                    seconds: 1,
+                                    nanos: 0,
+                                }),
+                            },
+                        ],
+                    },
+                    GoogleSpeechAlternative {
+                        transcript: "hello word".to_string(),
+                        confidence: Some(0.85),
+                        words: vec![],
+                    },
+                ],
+            }],
         };
 
         let result = GoogleSttProvider::convert_response(response, &SttConfig::default());
@@ -431,7 +444,10 @@ mod tests {
         let result = provider.transcribe(&audio, &config).await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("API key not found"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("API key not found"));
     }
 
     #[test]

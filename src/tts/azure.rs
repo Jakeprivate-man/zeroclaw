@@ -2,7 +2,9 @@
 // AZURE SPEECH SERVICES TEXT-TO-SPEECH PROVIDER
 // ═══════════════════════════════════════════════════════════════
 
-use super::{TtsConfig, TtsProvider, TtsProviderType, TtsResult, VoiceInfo, VoiceGender, validate_text};
+use super::{
+    validate_text, TtsConfig, TtsProvider, TtsProviderType, TtsResult, VoiceGender, VoiceInfo,
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::Client;
@@ -59,23 +61,28 @@ impl AzureTtsProvider {
 
     /// Get the voice to use
     fn get_voice(&self, config: &TtsConfig) -> String {
-        config
-            .voice
-            .clone()
-            .unwrap_or_else(|| {
-                // Default to neural voice for the language
-                format!("{}-{}-Neural",
-                    config.language.split('-').next().unwrap_or("en"),
-                    config.language.split('-').nth(1).unwrap_or("US").to_uppercase()
-                )
-            })
+        config.voice.clone().unwrap_or_else(|| {
+            // Default to neural voice for the language
+            format!(
+                "{}-{}-Neural",
+                config.language.split('-').next().unwrap_or("en"),
+                config
+                    .language
+                    .split('-')
+                    .nth(1)
+                    .unwrap_or("US")
+                    .to_uppercase()
+            )
+        })
     }
 
     /// Get the API URL
     fn get_api_url(&self) -> Result<String> {
         if self.api_base.contains('*') {
             let region = self.get_region()?;
-            Ok(format!("https://{region}.tts.speech.microsoft.com/cognitiveservices/v1"))
+            Ok(format!(
+                "https://{region}.tts.speech.microsoft.com/cognitiveservices/v1"
+            ))
         } else {
             Ok(self.api_base.clone())
         }
@@ -84,8 +91,22 @@ impl AzureTtsProvider {
     /// Build SSML for Azure TTS
     fn build_ssml(&self, text: &str, voice: &str, config: &TtsConfig) -> String {
         if config.enable_ssml {
-            // Assume text is already SSML, just update voice
-            text.replace("voice name=", &format!("voice name=\"{}\"", voice))
+            // Assume text is already SSML, update voice if present or inject it
+            if text.contains("voice name=") {
+                text.replace("voice name=\"", &format!("voice name=\"{}\"", voice))
+                    .split_once("voice name=\"")
+                    .map(|(prefix, rest)| {
+                        let rest = rest.split_once('\"').map_or(rest, |(_, after)| after);
+                        format!("{}voice name=\"{}\"{}", prefix, voice, rest)
+                    })
+                    .unwrap_or_else(|| text.to_string())
+            } else if text.contains("<speak>") {
+                // Inject voice element after <speak> tag
+                text.replace("<speak>", &format!("<speak><voice name='{}'>", voice))
+                    .replace("</speak>", "</voice></speak>")
+            } else {
+                text.to_string()
+            }
         } else {
             format!(
                 r#"<speak version='1.0' xml:lang='{}'><voice name='{}'><prosody rate='{}' pitch='{}'>{}</prosody></voice></speak>"#,
@@ -189,9 +210,7 @@ impl TtsProvider for AzureTtsProvider {
         let ssml = self.build_ssml(text, &voice, config);
 
         // Call API
-        let audio_data = self
-            .call_azure_api(&ssml, &api_key, config)
-            .await?;
+        let audio_data = self.call_azure_api(&ssml, &api_key, config).await?;
 
         // Convert response
         Ok(Self::convert_response(audio_data, config))
@@ -213,9 +232,7 @@ impl TtsProvider for AzureTtsProvider {
         let ssml = self.build_ssml(ssml, &voice, config);
 
         // Call API
-        let audio_data = self
-            .call_azure_api(&ssml, &api_key, config)
-            .await?;
+        let audio_data = self.call_azure_api(&ssml, &api_key, config).await?;
 
         // Convert response
         Ok(Self::convert_response(audio_data, config))
@@ -272,10 +289,7 @@ impl TtsProvider for AzureTtsProvider {
 
         // Filter by language if specified
         if let Some(lang) = language {
-            voices = voices
-                .into_iter()
-                .filter(|v| v.language == lang)
-                .collect();
+            voices = voices.into_iter().filter(|v| v.language == lang).collect();
         }
 
         Ok(voices)

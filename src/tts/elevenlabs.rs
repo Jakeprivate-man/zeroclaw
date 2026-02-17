@@ -2,7 +2,9 @@
 // ELEVENLABS TTS PROVIDER
 // ═══════════════════════════════════════════════════════════════
 
-use super::{TtsConfig, TtsProvider, TtsProviderType, TtsResult, VoiceInfo, VoiceGender, validate_text};
+use super::{
+    validate_text, TtsConfig, TtsProvider, TtsProviderType, TtsResult, VoiceGender, VoiceInfo,
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::Client;
@@ -51,11 +53,8 @@ impl ElevenLabsTtsProvider {
     }
 
     /// Get the model to use
-    fn get_model(&self, config: &TtsConfig) -> &str {
-        config
-            .model
-            .as_deref()
-            .unwrap_or("eleven_multilingual_v2")
+    fn get_model<'a>(&self, config: &'a TtsConfig) -> &'a str {
+        config.model.as_deref().unwrap_or("eleven_multilingual_v2")
     }
 
     /// Call the ElevenLabs TTS API
@@ -114,7 +113,9 @@ impl ElevenLabsTtsProvider {
             .await
             .context("Failed to read audio data")?;
 
-        Ok(ElevenLabsTtsResponse { audio_data: audio_data.to_vec() })
+        Ok(ElevenLabsTtsResponse {
+            audio_data: audio_data.to_vec(),
+        })
     }
 
     /// Convert audio data to TtsResult
@@ -210,10 +211,7 @@ impl TtsProvider for ElevenLabsTtsProvider {
 
         // Filter by language if specified
         if let Some(lang) = language {
-            voices = voices
-                .into_iter()
-                .filter(|v| v.language == lang)
-                .collect();
+            voices = voices.into_iter().filter(|v| v.language == lang).collect();
         }
 
         Ok(voices)
@@ -335,7 +333,10 @@ mod tests {
         let result = provider.synthesize("Hello world", &config).await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("API key not found"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("API key not found"));
     }
 
     #[tokio::test]
@@ -374,9 +375,7 @@ mod tests {
 
     #[test]
     fn test_convert_response_empty() {
-        let response = ElevenLabsTtsResponse {
-            audio_data: vec![],
-        };
+        let response = ElevenLabsTtsResponse { audio_data: vec![] };
 
         let config = TtsConfig::default();
         let result = ElevenLabsTtsProvider::convert_response(response, &config);

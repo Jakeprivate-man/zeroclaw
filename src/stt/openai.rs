@@ -2,7 +2,9 @@
 // OPENAI WHISPER PROVIDER
 // ═══════════════════════════════════════════════════════════════
 
-use super::{SttConfig, SttProvider, SttProviderType, SttResult, SttWord, audio_to_wav, validate_audio_data};
+use super::{
+    audio_to_wav, validate_audio_data, SttConfig, SttProvider, SttProviderType, SttResult, SttWord,
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::Client;
@@ -153,10 +155,13 @@ impl SttProvider for OpenAiSttProvider {
         Ok(Self::convert_response(response, config))
     }
 
-    async fn transcribe_file(&self, file_path: &std::path::Path, config: &SttConfig) -> Result<SttResult> {
+    async fn transcribe_file(
+        &self,
+        file_path: &std::path::Path,
+        config: &SttConfig,
+    ) -> Result<SttResult> {
         // Read file
-        let audio_data = std::fs::read(file_path)
-            .context("Failed to read audio file")?;
+        let audio_data = std::fs::read(file_path).context("Failed to read audio file")?;
 
         // Get API key
         let api_key = self.get_api_key(config)?;
@@ -321,7 +326,10 @@ mod tests {
         let result = provider.transcribe(&audio, &config).await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("API key not found"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("API key not found"));
 
         // Restore original if it existed
         if let Some(key) = _guard {

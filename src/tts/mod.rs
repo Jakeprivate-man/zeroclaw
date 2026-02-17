@@ -2,17 +2,17 @@
 // TTS MODULE - Text-to-Speech with multiple providers
 // ═══════════════════════════════════════════════════════════════
 
-mod openai;
+mod amazon;
+mod azure;
 mod elevenlabs;
 mod google;
-mod azure;
-mod amazon;
+mod openai;
 
-pub use openai::OpenAiTtsProvider;
+pub use amazon::AmazonTtsProvider;
+pub use azure::AzureTtsProvider;
 pub use elevenlabs::ElevenLabsTtsProvider;
 pub use google::GoogleTtsProvider;
-pub use azure::AzureTtsProvider;
-pub use amazon::AmazonTtsProvider;
+pub use openai::OpenAiTtsProvider;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -235,7 +235,8 @@ impl TtsEngine {
 
     /// Synthesize speech using the default provider
     pub async fn synthesize(&self, text: &str) -> Result<TtsResult> {
-        self.synthesize_with_config(text, &self.default_config).await
+        self.synthesize_with_config(text, &self.default_config)
+            .await
     }
 
     /// Synthesize speech with custom configuration
@@ -541,7 +542,10 @@ mod tests {
         let text = "Hello\x00World";
         let result = validate_text(text);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid control character"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid control character"));
     }
 
     #[test]

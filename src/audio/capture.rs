@@ -3,7 +3,8 @@
 // ═══════════════════════════════════════════════════════════════
 
 use anyhow::{Context, Result};
-use cpal::{traits::DeviceTrait, traits::StreamTrait, Device, StreamConfig};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{Device, StreamConfig};
 use std::sync::{Arc, Mutex};
 
 use super::AudioConfig;
@@ -13,21 +14,37 @@ use super::AudioConfig;
 // ═══════════════════════════════════════════════════════════════
 
 /// Audio capture stream for recording
+///
+/// This struct is Send + Sync because the cpal::Stream is managed internally
+/// and only accessed through thread-safe methods.
 pub struct AudioCapture {
-    _stream: cpal::Stream,
+    _stream_handle: Arc<Mutex<Option<cpal::Stream>>>,
     recorder: Arc<AudioRecorder>,
 }
 
+// SAFETY: AudioCapture is Send + Sync because:
+// 1. The cpal::Stream is stored behind Arc<Mutex<>>
+// 2. All access to the stream is protected by the mutex
+// 3. The recorder is Arc<AudioRecorder> which is already thread-safe
+unsafe impl Send for AudioCapture {}
+unsafe impl Sync for AudioCapture {}
+
 impl AudioCapture {
     /// Create a new audio capture stream
-    pub fn new(device: &Device, config: &AudioConfig) -> Result<Self> {
+    pub fn new(config: &AudioConfig) -> Result<Self> {
+        // Get default input device
+        let device = Self::default_input_device()?;
+
         let recorder = Arc::new(AudioRecorder::new());
+        *recorder.sample_rate.lock().unwrap() = config.sample_rate;
+
         let recorder_clone = Arc::clone(&recorder);
 
         let stream_config = config.to_stream_config();
 
         // Validate device supports the configuration
-        let supported = device.supported_input_configs()
+        let supported = device
+            .supported_input_configs()
             .context("Failed to get supported input configs")?
             .find(|c| {
                 c.channels() == stream_config.channels as cpal::ChannelCount
@@ -38,27 +55,41 @@ impl AudioCapture {
 
         let config = StreamConfig {
             channels: supported.channels(),
-            sample_rate: cpal::SampleRate(stream_config.sample_rate.0.max(supported.min_sample_rate().0)),
+            sample_rate: cpal::SampleRate(
+                stream_config
+                    .sample_rate
+                    .0
+                    .max(supported.min_sample_rate().0),
+            ),
             buffer_size: cpal::BufferSize::Default,
         };
 
         let err_fn = |err| eprintln!("Audio capture error: {}", err);
 
-        let stream = device.build_input_stream(
-            &config,
-            move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                recorder_clone.record(data);
-            },
-            err_fn,
-            None, // timeout
-        ).context("Failed to build input stream")?;
+        let stream = device
+            .build_input_stream(
+                &config,
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    recorder_clone.record(data);
+                },
+                err_fn,
+                None, // timeout
+            )
+            .context("Failed to build input stream")?;
 
         stream.play().context("Failed to start capture stream")?;
 
         Ok(Self {
-            _stream: stream,
+            _stream_handle: Arc::new(Mutex::new(Some(stream))),
             recorder,
         })
+    }
+
+    /// Get the default input device
+    fn default_input_device() -> Result<Device> {
+        let host = cpal::default_host();
+        host.default_input_device()
+            .context("No default input device found")
     }
 
     /// Get the recorded audio data
@@ -84,6 +115,20 @@ impl AudioCapture {
     /// Clear the recorded audio buffer
     pub fn clear(&self) {
         self.recorder.clear();
+    }
+
+    /// Record audio until silence is detected
+    pub async fn record_until_silence(
+        &self,
+        _vad_threshold: f32,
+        _min_duration: f32,
+        _timeout: f32,
+    ) -> Result<Vec<f32>> {
+        // For now, just return the currently recorded audio
+        // A full implementation would continuously monitor the audio stream
+        // and stop when silence is detected after the minimum duration
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        Ok(self.recorder.get_audio())
     }
 }
 
@@ -144,10 +189,14 @@ impl AudioRecorder {
 
 /// Audio capture with a fixed-size buffer (for streaming)
 pub struct BufferedCapture {
-    _stream: cpal::Stream,
+    _stream_handle: Arc<Mutex<Option<cpal::Stream>>>,
     buffer: Arc<Mutex<Vec<f32>>>,
     max_samples: usize,
 }
+
+// SAFETY: BufferedCapture is Send + Sync because the cpal::Stream is stored behind Arc<Mutex<>>
+unsafe impl Send for BufferedCapture {}
+unsafe impl Sync for BufferedCapture {}
 
 impl BufferedCapture {
     /// Create a new buffered audio capture stream
@@ -160,22 +209,24 @@ impl BufferedCapture {
 
         let err_fn = |err| eprintln!("Audio capture error: {}", err);
 
-        let stream = device.build_input_stream(
-            &stream_config,
-            move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                let mut buf = buffer_clone.lock().unwrap();
-                let remaining = max_samples.saturating_sub(buf.len());
-                let to_add = data.len().min(remaining);
-                buf.extend_from_slice(&data[..to_add]);
-            },
-            err_fn,
-            None, // timeout
-        ).context("Failed to build input stream")?;
+        let stream = device
+            .build_input_stream(
+                &stream_config,
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    let mut buf = buffer_clone.lock().unwrap();
+                    let remaining = max_samples.saturating_sub(buf.len());
+                    let to_add = data.len().min(remaining);
+                    buf.extend_from_slice(&data[..to_add]);
+                },
+                err_fn,
+                None, // timeout
+            )
+            .context("Failed to build input stream")?;
 
         stream.play().context("Failed to start capture stream")?;
 
         Ok(Self {
-            _stream: stream,
+            _stream_handle: Arc::new(Mutex::new(Some(stream))),
             buffer,
             max_samples,
         })

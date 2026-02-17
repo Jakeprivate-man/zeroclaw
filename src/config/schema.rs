@@ -991,7 +991,6 @@ impl Default for WasmRuntimeConfig {
     }
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DockerRuntimeConfig {
     /// Runtime image used to execute shell commands.
@@ -2219,7 +2218,6 @@ fn sync_directory(_path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    
 
     // ── Defaults ─────────────────────────────────────────────
 
@@ -3681,10 +3679,13 @@ default_temperature = 0.7
     fn voice_config_conversation_mode_variants() {
         let modes = vec!["turn-taking", "continuous", "push-to-talk"];
         for mode in modes {
-            let toml_str = format!(r#"
+            let toml_str = format!(
+                r#"
 enabled = true
 conversation_mode = "{}"
-"#, mode);
+"#,
+                mode
+            );
             let parsed: VoiceConfig = toml::from_str(&toml_str).unwrap();
             assert_eq!(parsed.conversation_mode, mode);
         }
@@ -3694,10 +3695,13 @@ conversation_mode = "{}"
     fn voice_config_stt_provider_variants() {
         let providers = vec!["openai", "google", "azure", "deepgram", "whisper_local"];
         for provider in providers {
-            let toml_str = format!(r#"
+            let toml_str = format!(
+                r#"
 enabled = true
 stt_provider = "{}"
-"#, provider);
+"#,
+                provider
+            );
             let parsed: VoiceConfig = toml::from_str(&toml_str).unwrap();
             assert_eq!(parsed.stt_provider, provider);
         }
@@ -3707,10 +3711,13 @@ stt_provider = "{}"
     fn voice_config_tts_provider_variants() {
         let providers = vec!["openai", "elevenlabs", "google", "azure", "amazon"];
         for provider in providers {
-            let toml_str = format!(r#"
+            let toml_str = format!(
+                r#"
 enabled = true
 tts_provider = "{}"
-"#, provider);
+"#,
+                provider
+            );
             let parsed: VoiceConfig = toml::from_str(&toml_str).unwrap();
             assert_eq!(parsed.tts_provider, provider);
         }

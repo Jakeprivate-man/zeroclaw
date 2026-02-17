@@ -2,10 +2,12 @@
 // GOOGLE CLOUD TEXT-TO-SPEECH PROVIDER
 // ═══════════════════════════════════════════════════════════════
 
-use super::{TtsConfig, TtsProvider, TtsProviderType, TtsResult, VoiceInfo, VoiceGender, validate_text};
-use base64::Engine;
+use super::{
+    validate_text, TtsConfig, TtsProvider, TtsProviderType, TtsResult, VoiceGender, VoiceInfo,
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use base64::Engine;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -108,7 +110,9 @@ impl GoogleTtsProvider {
 
     /// Convert response to TtsResult
     fn convert_response(response: GoogleTtsResponse, config: &TtsConfig) -> TtsResult {
-        let audio_data = base64::engine::general_purpose::STANDARD.decode(&response.audio_content).unwrap_or_default();
+        let audio_data = base64::engine::general_purpose::STANDARD
+            .decode(&response.audio_content)
+            .unwrap_or_default();
 
         TtsResult {
             audio_data,
@@ -144,9 +148,7 @@ impl TtsProvider for GoogleTtsProvider {
         let voice = self.get_voice(config);
 
         // Call API
-        let response = self
-            .call_tts_api(text, &api_key, &voice, config)
-            .await?;
+        let response = self.call_tts_api(text, &api_key, &voice, config).await?;
 
         // Convert response
         Ok(Self::convert_response(response, config))
@@ -201,10 +203,7 @@ impl TtsProvider for GoogleTtsProvider {
 
         // Filter by language if specified
         if let Some(lang) = language {
-            voices = voices
-                .into_iter()
-                .filter(|v| v.language == lang)
-                .collect();
+            voices = voices.into_iter().filter(|v| v.language == lang).collect();
         }
 
         Ok(voices)
@@ -321,7 +320,10 @@ mod tests {
         let result = provider.synthesize("Hello world", &config).await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("API key not found"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("API key not found"));
     }
 
     #[tokio::test]

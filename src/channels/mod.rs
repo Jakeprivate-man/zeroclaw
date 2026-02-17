@@ -9,6 +9,8 @@ pub mod matrix;
 pub mod slack;
 pub mod telegram;
 pub mod traits;
+#[cfg(feature = "voice")]
+pub mod voice;
 pub mod whatsapp;
 
 pub use cli::CliChannel;
@@ -22,6 +24,8 @@ pub use matrix::MatrixChannel;
 pub use slack::SlackChannel;
 pub use telegram::TelegramChannel;
 pub use traits::Channel;
+#[cfg(feature = "voice")]
+pub use voice::VoiceChannel;
 pub use whatsapp::WhatsAppChannel;
 
 use crate::agent::loop_::{build_tool_instructions, run_tool_call_loop};

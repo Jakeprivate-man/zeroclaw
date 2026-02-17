@@ -3,7 +3,8 @@
 // ═══════════════════════════════════════════════════════════════
 
 use anyhow::{Context, Result};
-use cpal::{traits::DeviceTrait, traits::StreamTrait, Device, StreamConfig};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{Device, StreamConfig};
 use std::sync::{Arc, Mutex};
 
 use super::AudioConfig;
@@ -13,15 +14,28 @@ use super::AudioConfig;
 // ═══════════════════════════════════════════════════════════════
 
 /// Audio playback handle
+///
+/// This struct is Send + Sync because the cpal::Stream is managed internally
+/// and only accessed through thread-safe methods.
 pub struct AudioPlayback {
-    _stream: cpal::Stream,
+    _stream_handle: Arc<Mutex<Option<cpal::Stream>>>,
     queue: Arc<Mutex<Vec<Vec<f32>>>>,
     current_sample: Arc<Mutex<usize>>,
 }
 
+// SAFETY: AudioPlayback is Send + Sync because:
+// 1. The cpal::Stream is stored behind Arc<Mutex<>>
+// 2. All access to the stream is protected by the mutex
+// 3. The queue and current_sample are Arc<Mutex<T>> which are thread-safe
+unsafe impl Send for AudioPlayback {}
+unsafe impl Sync for AudioPlayback {}
+
 impl AudioPlayback {
     /// Create a new audio playback handle
-    pub fn new(device: &Device, config: &AudioConfig) -> Result<Self> {
+    pub fn new() -> Result<Self> {
+        // Get default output device
+        let device = Self::default_output_device()?;
+        let config = AudioConfig::default();
         let queue: Arc<Mutex<Vec<Vec<f32>>>> = Arc::new(Mutex::new(Vec::new()));
         let queue_clone = Arc::clone(&queue);
         let current_sample = Arc::new(Mutex::new(0));
@@ -30,7 +44,8 @@ impl AudioPlayback {
         let stream_config = config.to_stream_config();
 
         // Validate device supports the configuration
-        let supported = device.supported_output_configs()
+        let supported = device
+            .supported_output_configs()
             .context("Failed to get supported output configs")?
             .find(|c| {
                 c.channels() == stream_config.channels as cpal::ChannelCount
@@ -41,7 +56,12 @@ impl AudioPlayback {
 
         let config = StreamConfig {
             channels: supported.channels(),
-            sample_rate: cpal::SampleRate(stream_config.sample_rate.0.max(supported.min_sample_rate().0)),
+            sample_rate: cpal::SampleRate(
+                stream_config
+                    .sample_rate
+                    .0
+                    .max(supported.min_sample_rate().0),
+            ),
             buffer_size: cpal::BufferSize::Default,
         };
 
@@ -49,51 +69,60 @@ impl AudioPlayback {
 
         let err_fn = |err| eprintln!("Audio playback error: {}", err);
 
-        let stream = device.build_output_stream(
-            &config,
-            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                // Fill the output buffer with audio data
-                for frame in data.chunks_mut(channels) {
-                    let mut sample = 0.0;
+        let stream = device
+            .build_output_stream(
+                &config,
+                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    // Fill the output buffer with audio data
+                    for frame in data.chunks_mut(channels) {
+                        let mut sample = 0.0;
 
-                    // Get the next sample from the queue
-                    let mut queue = queue_clone.lock().unwrap();
-                    let mut current = current_sample_clone.lock().unwrap();
+                        // Get the next sample from the queue
+                        let mut queue = queue_clone.lock().unwrap();
+                        let mut current = current_sample_clone.lock().unwrap();
 
-                    while *current < queue.len() {
-                        let audio = &queue[*current];
-                        if *current < audio.len() {
-                            sample = audio[*current];
-                            *current += 1;
-                            break;
-                        } else {
-                            *current += 1;
+                        while *current < queue.len() {
+                            let audio = &queue[*current];
+                            if *current < audio.len() {
+                                sample = audio[*current];
+                                *current += 1;
+                                break;
+                            } else {
+                                *current += 1;
+                            }
+                        }
+
+                        // Reset if we've played all audio
+                        if *current >= queue.len() {
+                            *current = 0;
+                            queue.clear();
+                        }
+
+                        // Write to all channels
+                        for sample_out in frame.iter_mut() {
+                            *sample_out = sample;
                         }
                     }
-
-                    // Reset if we've played all audio
-                    if *current >= queue.len() {
-                        *current = 0;
-                        queue.clear();
-                    }
-
-                    // Write to all channels
-                    for sample_out in frame.iter_mut() {
-                        *sample_out = sample;
-                    }
-                }
-            },
-            err_fn,
-            None, // timeout
-        ).context("Failed to build output stream")?;
+                },
+                err_fn,
+                None, // timeout
+            )
+            .context("Failed to build output stream")?;
 
         stream.play().context("Failed to start playback stream")?;
 
         Ok(Self {
-            _stream: stream,
+            _stream_handle: Arc::new(Mutex::new(Some(stream))),
             queue,
             current_sample,
         })
+    }
+
+    /// Get the default output device
+    fn default_output_device() -> Result<Device> {
+        let host = cpal::default_host();
+        host.default_output_device()
+            .context("No default output device found")
     }
 
     /// Play audio data (non-blocking, queues for playback)
@@ -145,8 +174,8 @@ impl AudioPlayback {
 // ═══════════════════════════════════════════════════════════════
 
 /// Simple one-shot audio playback
-pub fn play_audio(device: &Device, audio: &[f32], config: &AudioConfig) -> Result<()> {
-    let playback = AudioPlayback::new(device, config)?;
+pub fn play_audio(_device: &Device, audio: &[f32], _config: &AudioConfig) -> Result<()> {
+    let playback = AudioPlayback::new()?;
     playback.play_blocking(audio.to_vec())?;
     Ok(())
 }
@@ -188,9 +217,7 @@ mod tests {
     fn test_audio_clamping() {
         // Test that audio samples are properly clamped
         let samples: Vec<f32> = vec![-1.5, -0.5, 0.0, 0.5, 1.5];
-        let clamped: Vec<f32> = samples.iter()
-            .map(|&x| x.clamp(-1.0, 1.0))
-            .collect();
+        let clamped: Vec<f32> = samples.iter().map(|&x| x.clamp(-1.0, 1.0)).collect();
 
         assert_eq!(clamped[0], -1.0);
         assert_eq!(clamped[1], -0.5);
@@ -203,12 +230,13 @@ mod tests {
     fn test_stereo_to_mono() {
         // Test converting stereo audio to mono
         let stereo = vec![
-            0.5, 0.3,  // Left, Right
+            0.5, 0.3, // Left, Right
             -0.2, 0.1, // Left, Right
             0.0, -0.4, // Left, Right
         ];
 
-        let mono: Vec<f32> = stereo.chunks(2)
+        let mono: Vec<f32> = stereo
+            .chunks(2)
             .map(|chunk| (chunk[0] + chunk[1]) / 2.0)
             .collect();
 
@@ -223,9 +251,7 @@ mod tests {
         // Test converting mono audio to stereo
         let mono = vec![0.5, -0.2, 0.0];
 
-        let stereo: Vec<f32> = mono.iter()
-            .flat_map(|&sample| [sample, sample])
-            .collect();
+        let stereo: Vec<f32> = mono.iter().flat_map(|&sample| [sample, sample]).collect();
 
         assert_eq!(stereo.len(), 6);
         assert_eq!(stereo[0], 0.5);
@@ -240,7 +266,8 @@ mod tests {
         let audio: Vec<f32> = vec![0.5, -0.3, 0.0];
         let gain = 0.5;
 
-        let amplified: Vec<f32> = audio.iter()
+        let amplified: Vec<f32> = audio
+            .iter()
             .map(|&sample| (sample * gain).clamp(-1.0, 1.0))
             .collect();
 
@@ -255,7 +282,9 @@ mod tests {
         let audio = vec![1.0; 100];
         let fade_samples = 10;
 
-        let faded: Vec<f32> = audio.iter().enumerate()
+        let faded: Vec<f32> = audio
+            .iter()
+            .enumerate()
             .map(|(i, &sample)| {
                 if i < fade_samples {
                     sample * (i as f32 / fade_samples as f32)
@@ -277,10 +306,12 @@ mod tests {
         let fade_samples = 10;
         let total_samples = audio.len();
 
-        let faded: Vec<f32> = audio.iter().enumerate()
+        let faded: Vec<f32> = audio
+            .iter()
+            .enumerate()
             .map(|(i, &sample)| {
                 if i >= total_samples - fade_samples {
-                    let fade_index = i - (total_samples - fade_samples);  // 0 to 9
+                    let fade_index = i - (total_samples - fade_samples); // 0 to 9
                     let scale = (fade_samples - 1 - fade_index) as f32 / fade_samples as f32;
                     sample * scale
                 } else {

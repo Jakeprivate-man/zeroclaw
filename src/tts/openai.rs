@@ -2,7 +2,9 @@
 // OPENAI TTS PROVIDER
 // ═══════════════════════════════════════════════════════════════
 
-use super::{TtsConfig, TtsProvider, TtsProviderType, TtsResult, VoiceInfo, VoiceGender, validate_text};
+use super::{
+    validate_text, TtsConfig, TtsProvider, TtsProviderType, TtsResult, VoiceGender, VoiceInfo,
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::Client;
@@ -43,19 +45,13 @@ impl OpenAiTtsProvider {
     }
 
     /// Get the model to use
-    fn get_model(&self, config: &TtsConfig) -> &str {
-        config
-            .model
-            .as_deref()
-            .unwrap_or("tts-1")
+    fn get_model<'a>(&self, config: &'a TtsConfig) -> &'a str {
+        config.model.as_deref().unwrap_or("tts-1")
     }
 
     /// Get the voice to use
-    fn get_voice(&self, config: &TtsConfig) -> &str {
-        config
-            .voice
-            .as_deref()
-            .unwrap_or("alloy")
+    fn get_voice<'a>(&self, config: &'a TtsConfig) -> &'a str {
+        config.voice.as_deref().unwrap_or("alloy")
     }
 
     /// Call the OpenAI TTS API
@@ -100,7 +96,9 @@ impl OpenAiTtsProvider {
             .await
             .context("Failed to read audio data")?;
 
-        Ok(OpenAiTtsResponse { audio_data })
+        Ok(OpenAiTtsResponse {
+            audio_data: audio_data.to_vec(),
+        })
     }
 
     /// Convert audio data to TtsResult
@@ -109,8 +107,8 @@ impl OpenAiTtsProvider {
             audio_data: response.audio_data.to_vec(),
             format: config.output_format.clone(),
             sample_rate: config.sample_rate,
-            channels: 1, // OpenAI TTS is mono
-            duration: None, // OpenAI doesn't provide duration
+            channels: 1,            // OpenAI TTS is mono
+            duration: None,         // OpenAI doesn't provide duration
             timestamps: Vec::new(), // OpenAI doesn't provide timestamps
         }
     }
@@ -353,7 +351,10 @@ mod tests {
         let result = provider.synthesize(text, &config).await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid control character"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid control character"));
     }
 
     #[tokio::test]
@@ -366,7 +367,10 @@ mod tests {
         let result = provider.synthesize("Hello world", &config).await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("API key not found"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("API key not found"));
     }
 
     #[tokio::test]
@@ -401,7 +405,9 @@ mod tests {
         let config = TtsConfig::default();
 
         // SSML is not supported, so it extracts the text
-        let result = provider.synthesize_ssml("<speak>Hello world</speak>", &config).await;
+        let result = provider
+            .synthesize_ssml("<speak>Hello world</speak>", &config)
+            .await;
 
         // Should fail due to no API key, but the text extraction should work
         assert!(result.is_err() || result.is_ok());
@@ -409,9 +415,7 @@ mod tests {
 
     #[test]
     fn test_convert_response_empty() {
-        let response = OpenAiTtsResponse {
-            audio_data: bytes::Bytes::new(),
-        };
+        let response = OpenAiTtsResponse { audio_data: vec![] };
 
         let config = TtsConfig::default();
         let result = OpenAiTtsProvider::convert_response(response, &config);
@@ -426,7 +430,7 @@ mod tests {
     fn test_convert_response_with_data() {
         let audio_data = vec![0u8, 1, 2, 3, 4, 5];
         let response = OpenAiTtsResponse {
-            audio_data: bytes::Bytes::from(audio_data),
+            audio_data: audio_data.clone(),
         };
 
         let config = TtsConfig::default();

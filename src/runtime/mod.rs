@@ -31,9 +31,9 @@ pub fn create_runtime(config: &RuntimeConfig) -> anyhow::Result<Box<dyn RuntimeA
         other if other.trim().is_empty() => {
             anyhow::bail!("runtime.kind cannot be empty. Supported values: native, docker, wasm")
         }
-        other => anyhow::bail!(
-            "Unknown runtime kind '{other}'. Supported values: native, docker, wasm"
-        ),
+        other => {
+            anyhow::bail!("Unknown runtime kind '{other}'. Supported values: native, docker, wasm")
+        }
     }
 }
 

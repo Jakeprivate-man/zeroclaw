@@ -52,20 +52,16 @@ pub struct AudioDevice {
 /// List all available audio devices
 pub fn list_audio_devices() -> Result<Vec<AudioDevice>> {
     let host = cpal::default_host();
-    let devices = host.devices()
-        .context("Failed to get audio devices")?;
+    let devices = host.devices().context("Failed to get audio devices")?;
 
-    let default_input = host.default_input_device()
-        .and_then(|d| d.name().ok());
+    let default_input = host.default_input_device().and_then(|d| d.name().ok());
 
-    let default_output = host.default_output_device()
-        .and_then(|d| d.name().ok());
+    let default_output = host.default_output_device().and_then(|d| d.name().ok());
 
     let mut result = Vec::new();
 
     for device in devices {
-        let name = device.name()
-            .unwrap_or_else(|_| "Unknown".to_string());
+        let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
 
         let device_type = get_device_type(&device)?;
 
@@ -93,11 +89,13 @@ pub fn list_audio_devices() -> Result<Vec<AudioDevice>> {
 
 /// Get the type of a device (input, output, or both)
 fn get_device_type(device: &Device) -> Result<AudioDeviceType> {
-    let has_input = device.supported_input_configs()
+    let has_input = device
+        .supported_input_configs()
         .map(|configs| configs.count() > 0)
         .unwrap_or(false);
 
-    let has_output = device.supported_output_configs()
+    let has_output = device
+        .supported_output_configs()
         .map(|configs| configs.count() > 0)
         .unwrap_or(false);
 
@@ -162,16 +160,15 @@ fn get_device_capabilities(device: &Device) -> Result<(Vec<u32>, Vec<u16>)> {
 /// Find an input device by name
 pub fn find_input_device(name: &str) -> Result<Device> {
     let host = cpal::default_host();
-    let devices = host.devices()
-        .context("Failed to get audio devices")?;
+    let devices = host.devices().context("Failed to get audio devices")?;
 
     for device in devices {
-        let device_name = device.name()
-            .unwrap_or_else(|_| "Unknown".to_string());
+        let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
 
         if device_name.contains(name) {
             // Check if it supports input
-            if device.supported_input_configs()
+            if device
+                .supported_input_configs()
                 .map(|c| c.count() > 0)
                 .unwrap_or(false)
             {
@@ -186,16 +183,15 @@ pub fn find_input_device(name: &str) -> Result<Device> {
 /// Find an output device by name
 pub fn find_output_device(name: &str) -> Result<Device> {
     let host = cpal::default_host();
-    let devices = host.devices()
-        .context("Failed to get audio devices")?;
+    let devices = host.devices().context("Failed to get audio devices")?;
 
     for device in devices {
-        let device_name = device.name()
-            .unwrap_or_else(|_| "Unknown".to_string());
+        let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
 
         if device_name.contains(name) {
             // Check if it supports output
-            if device.supported_output_configs()
+            if device
+                .supported_output_configs()
                 .map(|c| c.count() > 0)
                 .unwrap_or(false)
             {

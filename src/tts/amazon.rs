@@ -2,14 +2,17 @@
 // AMAZON POLLY TEXT-TO-SPEECH PROVIDER
 // ═══════════════════════════════════════════════════════════════
 
-use super::{TtsConfig, TtsProvider, TtsProviderType, TtsResult, VoiceInfo, VoiceGender, text_to_ssml, validate_text};
+use super::{
+    text_to_ssml, validate_text, TtsConfig, TtsProvider, TtsProviderType, TtsResult, VoiceGender,
+    VoiceInfo,
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use hmac::{Hmac, Mac};
 use reqwest::Client;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::time::Duration;
-use hmac::{Hmac, Mac};
-use sha2::{Sha256, Digest};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -66,22 +69,54 @@ impl AmazonTtsProvider {
 
     /// Get the voice to use
     fn get_voice(&self, config: &TtsConfig) -> String {
-        config
-            .voice
-            .clone()
-            .unwrap_or_else(|| "Joanna".to_string())
+        config.voice.clone().unwrap_or_else(|| "Joanna".to_string())
     }
 
     /// Get the engine to use (standard or neural)
     fn get_engine(&self, config: &TtsConfig) -> String {
         // Check if the voice is a neural voice
         let neural_voices = vec![
-            "Ada", "Amy", "Aria", "Arthur", "Ayanda", "Bianca", "Brian",
-            "Camila", "Carol", "Catherine", "Celine", "Chantal", "Cristiano",
-            "Daniel", "Elin", "Emma", "Gabrielle", "Hans", "Ivy", "Jorge",
-            "Kendra", "Kevin", "Kajal", "Karl", "Kendra", "Kimberly", "Lea",
-            "Liam", "Liv", "Matthew", "Mia", "Miguel", "Niamh", "Olivia",
-            "Penelope", "Raveena", "Ruth", "Stephen", "Takumi", "Vicki", "Vitoria",
+            "Ada",
+            "Amy",
+            "Aria",
+            "Arthur",
+            "Ayanda",
+            "Bianca",
+            "Brian",
+            "Camila",
+            "Carol",
+            "Catherine",
+            "Celine",
+            "Chantal",
+            "Cristiano",
+            "Daniel",
+            "Elin",
+            "Emma",
+            "Gabrielle",
+            "Hans",
+            "Ivy",
+            "Jorge",
+            "Kendra",
+            "Kevin",
+            "Kajal",
+            "Karl",
+            "Kendra",
+            "Kimberly",
+            "Lea",
+            "Liam",
+            "Liv",
+            "Matthew",
+            "Mia",
+            "Miguel",
+            "Niamh",
+            "Olivia",
+            "Penelope",
+            "Raveena",
+            "Ruth",
+            "Stephen",
+            "Takumi",
+            "Vicki",
+            "Vitoria",
         ];
 
         let voice = self.get_voice(config);
@@ -125,7 +160,12 @@ impl AmazonTtsProvider {
 
         let canonical_request = format!(
             "{}\n{}\n{}\n{}\n{}\n{}",
-            method, canonical_uri, canonical_querystring, canonical_headers, signed_headers, payload_hash
+            method,
+            canonical_uri,
+            canonical_querystring,
+            canonical_headers,
+            signed_headers,
+            payload_hash
         );
 
         // Step 2: Create string to sign
@@ -139,7 +179,7 @@ impl AmazonTtsProvider {
         );
 
         // Step 3: Calculate signature
-        let mut signing_key = Self::get_signature_key(secret_key, date_stamp, region, service)?;
+        let mut signing_key = Self::get_signature_key(secret_key, &date_stamp, region, service)?;
         signing_key.update(string_to_sign.as_bytes());
         let signature = hex::encode(signing_key.finalize().into_bytes());
 
@@ -152,7 +192,12 @@ impl AmazonTtsProvider {
         Ok(authorization_header)
     }
 
-    fn get_signature_key(key: &str, date_stamp: &str, region_name: &str, service_name: &str) -> Result<HmacSha256> {
+    fn get_signature_key(
+        key: &str,
+        date_stamp: &str,
+        region_name: &str,
+        service_name: &str,
+    ) -> Result<HmacSha256> {
         let k_date = Self::hmac_sha256(format!("AWS4{}", key).as_bytes(), date_stamp.as_bytes())?;
         let k_region = Self::hmac_sha256(&k_date, region_name.as_bytes())?;
         let k_service = Self::hmac_sha256(&k_region, service_name.as_bytes())?;
@@ -162,8 +207,8 @@ impl AmazonTtsProvider {
     }
 
     fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
-        let mut mac = HmacSha256::new_from_slice(key)
-            .map_err(|e| anyhow::anyhow!("HMAC error: {}", e))?;
+        let mut mac =
+            HmacSha256::new_from_slice(key).map_err(|e| anyhow::anyhow!("HMAC error: {}", e))?;
         mac.update(data);
         Ok(mac.finalize().into_bytes().to_vec())
     }
@@ -233,7 +278,10 @@ impl AmazonTtsProvider {
             .post(&url)
             .header("Content-Type", "application/json")
             .header("X-Amz-Date", amz_date)
-            .header("X-Amz-Content-Sha256", hex::encode(Sha256::digest(&body_bytes)))
+            .header(
+                "X-Amz-Content-Sha256",
+                hex::encode(Sha256::digest(&body_bytes)),
+            )
             .header("Authorization", authorization)
             .header("Host", "polly.amazonaws.com")
             .body(body_bytes)
@@ -408,10 +456,7 @@ impl TtsProvider for AmazonTtsProvider {
 
         // Filter by language if specified
         if let Some(lang) = language {
-            voices = voices
-                .into_iter()
-                .filter(|v| v.language == lang)
-                .collect();
+            voices = voices.into_iter().filter(|v| v.language == lang).collect();
         }
 
         Ok(voices)
@@ -644,7 +689,8 @@ mod tests {
 
     #[test]
     fn test_get_signature_key() {
-        let result = AmazonTtsProvider::get_signature_key("secret", "20230101", "us-east-1", "polly");
+        let result =
+            AmazonTtsProvider::get_signature_key("secret", "20230101", "us-east-1", "polly");
         assert!(result.is_ok());
     }
 }
