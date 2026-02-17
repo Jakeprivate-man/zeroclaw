@@ -17,7 +17,7 @@
   <a href="https://buymeacoffee.com/argenistherose"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Donate-yellow.svg?style=flat&logo=buy-me-a-coffee" alt="Buy Me a Coffee" /></a>
 </p>
 
-快速、小巧且完全自主的 AI 助手基础设施 — — 随处部署，万物可换。
+快速、小巧且完全自主的 AI 助手基础设施 —— 随处部署，万物可换。
 
 ```
 ~3.4MB 二进制文件 · <10ms 启动时间 · 1,017 个测试 · 22+ 提供商（providers） · 8 个 Trait · 万物可插拔
@@ -28,13 +28,13 @@
 - 🏎️ **超轻量级：** <5MB 内存占用 — 比 OpenClaw 核心小 99%。
 - 💰 **最低成本：** 足够高效，可以在 10 美元的硬件上运行 — 比 Mac mini 便宜 98%。
 - ⚡ **闪电般快速：** 启动时间加快 400 倍，启动时间 <10 毫秒（即使在 0.6GHz 内核上，启动时间也低于 1 秒）。
-- 🌍 **真正的可移植性：**跨 ARM、x86 和 RISC-V 的单个独立二进制文件。
+- 🌍 **真正的可移植性：** 跨 ARM、x86 和 RISC-V 的单个独立二进制文件。
 
 ### 为什么团队选择 ZeroClaw
 
 - **默认精简：** 小巧的 Rust 二进制文件，快速启动，低内存占用。
 - **设计安全：** 配对机制、严格沙箱、显式白名单、工作区作用域。
-- **完全可交换：**核心系统均为 Trait（提供商（providers）、渠道（channels）、工具（tools）、记忆（memory）、隧道（tunnels））。
+- **完全可替换：** 核心系统均为 Trait（提供商（providers）、渠道（channels）、工具（tools）、记忆（memory）、隧道（tunnels））。
 - **无锁定：** OpenAI 兼容的提供商（provider）支持 + 可插拔的自定义端点。
 
 ## 基准测试快照 (ZeroClaw vs OpenClaw)
@@ -49,7 +49,7 @@
 | **二进制大小** | ~28MB (dist) | N/A (脚本) | ~8MB | **3.4 MB** |
 | **成本** | Mac Mini $599 | Linux SBC ~$50 | Linux 开发板 $10 | **任意硬件 $10** |
 
-> 注：注意：ZeroClaw 结果是在发布版本 (release builds) 上使用 `/usr/bin/time -l` 测量的。OpenClaw 需要 Node.js 运行时（~390MB 开销）。PicoClaw 和 ZeroClaw 是静态二进制文件。
+> 注意：ZeroClaw 结果是在发布版本（release builds）上使用 `/usr/bin/time -l` 测量的。OpenClaw 需要 Node.js 运行时（约 390MB 开销）。PicoClaw 和 ZeroClaw 是静态二进制文件。
 
 <p align="center">
   <img src="zero-claw.jpeg" alt="ZeroClaw vs OpenClaw Comparison" width="800" />
@@ -76,7 +76,7 @@ ls -lh target/release/zeroclaw
    ```powershell
    winget install Microsoft.VisualStudio.2022.BuildTools
    ```
-在安装过程中（或通过 Visual Studio 安装程序），选择 **“使用 C++ 进行桌面开发”** 工作负载。
+安装过程中（或通过 Visual Studio Installer），选择 **“Desktop development with C++”** 工作负载。
 
 2. **Rust 工具链：**
    ```powershell
@@ -122,7 +122,7 @@ ls -lh target/release/zeroclaw
 
 - **Docker** — 仅当使用[Docker 沙盒运行时](#运行时支持当前) (`runtime.kind = "docker"`) 时才需要。通过包管理器或[docker.com](https://docs.docker.com/engine/install/)安装。
 
-> **注意：** 默认`cargo build --release` 默认使用 `codegen-units=1`，可兼容低内存设备（例如 1GB RAM 的 Raspberry Pi 3）。如需在高性能机器上更快构建，可使用 `cargo build --profile release-fast`。
+> **注意：** 默认 `cargo build --release` 使用 `codegen-units=1`，以兼容低内存设备（如 1GB RAM 的 Raspberry Pi 3）。如需在高性能机器上更快构建，可使用 `cargo build --profile release-fast`。
 
 </details>
 
@@ -178,89 +178,89 @@ zeroclaw migrate openclaw --dry-run
 zeroclaw migrate openclaw
 ```
 
-> **开发后备（无全局安装）：** 在命令前添加`cargo run --release --`（示例：`cargo run --release -- status`）。
+> **开发回退（无全局安装）：** 在命令前添加 `cargo run --release --`（示例：`cargo run --release -- status`）。
 
-## 建筑学
+## 架构
 
-每个子系统都是一个**特征** — — 通过配置更改来交换实现，零代码更改。
+每个子系统都是一个 **Trait** — 更改配置即可替换实现，零代码更改。
 
 <p align="center">
   <img src="docs/architecture.svg" alt="ZeroClaw Architecture" width="900" />
 </p>
 
-| 子系统 | 特征 | 发货时附带 | 延长 |
-|-----------|-------|------------|--------|
-| **人工智能模型** | `Provider` | 22+ 提供商（providers）（OpenRouter、Anthropic、OpenAI、Ollama、Venice、Groq、Mistral、xAI、DeepSeek、Together、Fireworks、Perplexity、Cohere、Bedrock 等） | `custom:https://your-api.com` — 任何 OpenAI 兼容 API |
-| **Channels** | `Channel` | CLI、Telegram、Discord、Slack、iMessage、矩阵、WhatsApp、Webhook | 任何消息 API |
-| **Memory** | `Memory` | SQLite 混合搜索（FTS5 + 矢量余弦相似度）、Lucid 桥接（CLI 同步 + SQLite 后备）、Markdown | 任何持久化后端 |
-| **Tools** | `Tool` | shell、file_read、file_write、memory_store、memory_recall、memory_forget、browser_open（Brave + 白名单）、浏览器（代理浏览器/rust-native）、composio（可选） | 任何能力 |
-| **可观察性** | `Observer` | Noop、日志、多 | Prometheus, OTel |
-| **运行时** | `RuntimeAdapter` | 本机，Docker（沙盒） | WASM（已计划；不受支持的类型会快速失败） |
-| **安全** | `SecurityPolicy` | Gateway 配对、沙箱、白名单、速率限制、文件系统范围、加密秘密 | — |
-| **身份** | `IdentityConfig` | OpenClaw（降价）、AIEOS v1.1 (JSON) | 任何身份格式 |
-| **Tunnel** | `Tunnel` | 无、Cloudflare、Tailscale、ngrok、自定义 | 任何隧道二进制文件 |
-| **心跳** | 引擎 | HEARTBEAT.md 定期任务 | — |
-| **技能** | 装载机 | TOML 清单 + SKILL.md 说明 | 社区技能包 |
-| **整合** | 登记处 | 跨 9 个类别的 50 多个集成 | 插件系统 |
+| 子系统 | Trait | 内置支持 | 扩展 |
+| --- | --- | --- | --- |
+| **AI 模型** | `Provider` | 22+ 提供商（OpenRouter、Anthropic、OpenAI、Ollama、Venice、Groq、Mistral、xAI、DeepSeek、Together、Fireworks、Perplexity、Cohere、Bedrock 等） | `custom:https://your-api.com` — 任何 OpenAI 兼容 API |
+| **渠道** | `Channel` | CLI、Telegram、Discord、Slack、iMessage、Matrix、WhatsApp、Webhook | 任何消息 API |
+| **记忆** | `Memory` | SQLite 混合搜索（FTS5 + 向量余弦相似度）、Lucid 桥接（CLI 同步 + SQLite 回退）、Markdown | 任何持久化后端 |
+| **工具** | `Tool` | shell、file_read、file_write、memory_store、memory_recall、memory_forget、browser_open（Brave + 白名单）、browser（agent-browser / rust-native）、composio（可选） | 任何能力 |
+| **可观测性** | `Observer` | Noop（无操作）、Log（日志）、Multi（多重） | Prometheus、OTel |
+| **运行时** | `RuntimeAdapter` | Native（原生）、Docker（沙盒） | WASM（计划中；不支持的类型会快速失败） |
+| **安全** | `SecurityPolicy` | 网关配对、沙盒、白名单、速率限制、文件系统作用域、加密密钥 | — |
+| **身份** | `IdentityConfig` | OpenClaw（markdown）、AIEOS v1.1（JSON） | 任何身份格式 |
+| **隧道** | `Tunnel` | None、Cloudflare、Tailscale、ngrok、Custom | 任何隧道二进制文件 |
+| **心跳** | Engine | HEARTBEAT.md 定期任务 | — |
+| **技能** | Loader | TOML 清单 + SKILL.md 指令 | 社区技能包 |
+| **集成** | Registry | 9 个类别的 50+ 种集成 | 插件系统 |
 
 ### 运行时支持（当前）
 
-- ✅ 今天支持：`runtime.kind = "native"` 或 `runtime.kind = "docker"`
-- 🚧 已计划，尚未实施：WASM / 边缘运行时
+- ✅ 当前支持：`runtime.kind = "native"` 或 `runtime.kind = "docker"`
+- 🚧 计划中（尚未实现）：WASM / 边缘运行时
 
-当配置了不受支持的 `runtime.kind` 时，ZeroClaw 现在会退出并显示明显的错误，而不是默默地回退到本机。
+当配置了不支持的 `runtime.kind` 时，ZeroClaw 现在会以明确错误退出，而不是静默回退到 native 模式。
 
-### Memory 系统（全栈搜索引擎）
+### 记忆系统（全栈搜索引擎）
 
-所有自定义，零外部依赖 - 没有 Pinecone，没有 Elasticsearch，没有 LangChain：
+完全自定义，零外部依赖 —— 没有 Pinecone，没有 Elasticsearch，没有 LangChain：
 
-| 层 | 执行 |
-|-------|---------------|
-| **矢量数据库** | 嵌入存储为 BLOB in SQLite，余弦相似度搜索 |
-| **关键字搜索** | FTS5 虚拟牌桌，BM25 计分 |
+| 层级 | 实现 |
+| --- | --- |
+| **向量数据库** | Embedding 作为 BLOB 存储在 SQLite 中，余弦相似度搜索 |
+| **关键词搜索** | FTS5 虚拟表，支持 BM25 评分 |
 | **混合合并** | 自定义加权合并函数（`vector.rs`） |
-| **嵌入** | `EmbeddingProvider` 特征 — OpenAI、自定义 URL 或 noop |
-| **分块** | 具有标题保存功能的基于行的 Markdown 分块器 |
-| **缓存** | SQLite `embedding_cache` 表，LRU 驱逐 |
-| **安全重建索引** | 重建 FTS5 + 以原子方式重新嵌入缺失的向量 |
+| **Embedding** | `EmbeddingProvider` trait — OpenAI、自定义 URL 或 noop |
+| **分块（Chunking）** | 保留标题的基于行的 Markdown 分块器 |
+| **缓存** | 带 LRU 驱逐策略的 SQLite `embedding_cache` 表 |
+| **安全重建索引** | 原子重建 FTS5 + 重新嵌入缺失向量 |
 
-代理通过工具（tools）自动召回、保存和管理记忆。
+代理通过工具（tools）自动回忆、保存和管理记忆。
 
 ```toml
 [memory]
-backend = "sqlite"          # “sqlite”、“清晰”、“markdown”、“无”
+backend = "sqlite"          # "sqlite", "lucid", "markdown", "none"
 auto_save = true
 embedding_provider = "openai"
 vector_weight = 0.7
 keyword_weight = 0.3
 
-# backend = "none" 使用显式无操作内存后端（无持久性）
+# backend = "none" 使用显式无操作记忆后端（无持久化）
 
-# 后端可选 =“lucid”
-# ZEROCLAW_LUCID_CMD=/usr/local/bin/lucid # 默认值：lucid
-# ZEROCLAW_LUCID_BUDGET=200 # 默认值：200
-# ZEROCLAW_LUCID_LOCAL_HIT_THRESHOLD=3 # 本地命中计数以跳过外部调用
-# ZEROCLAW_LUCID_RECALL_TIMEOUT_MS=120 # 清晰上下文回忆的低延迟预算
-# ZEROCLAW_LUCID_STORE_TIMEOUT_MS=800 # lucid 存储的异步同步超时
-# ZEROCLAW_LUCID_FAILURE_COOLDOWN_MS=15000 # 清醒失败后的冷却时间，以避免重复的缓慢尝试
+# 对于 backend = "lucid" 可选
+# ZEROCLAW_LUCID_CMD=/usr/local/bin/lucid   # 默认: lucid
+# ZEROCLAW_LUCID_BUDGET=200                 # 默认: 200
+# ZEROCLAW_LUCID_LOCAL_HIT_THRESHOLD=3      # 跳过外部调用的本地命中计数
+# ZEROCLAW_LUCID_RECALL_TIMEOUT_MS=120      # lucid 上下文调用的低延迟预算
+# ZEROCLAW_LUCID_STORE_TIMEOUT_MS=800       # lucid 存储的异步同步超时
+# ZEROCLAW_LUCID_FAILURE_COOLDOWN_MS=15000  # lucid 失败后的冷却时间，避免重复的慢调用
 ```
 
 ## 安全
 
-ZeroClaw 在**每一层**强制执行安全性 — — 而不仅仅是沙箱。它通过了社区安全检查表中的所有项目。
+ZeroClaw 在 **每一层** 强制执行安全性 —— 不仅仅是沙盒。它通过了社区安全检查清单的所有项目。
 
-### 安全检查表
+### 安全检查清单
 
-| # | 物品 | 地位 | 如何 |
-|---|------|--------|-----|
-| 1 | **Gateway 未公开暴露** | ✅ | 默认绑定`127.0.0.1`。在没有隧道或显式`allow_public_bind = true`的情况下拒绝`0.0.0.0`。|
-| 2 | **需要配对** | ✅ | 启动时的 6 位一次性代码。通过`POST /pair` 交换不记名令牌。所有`/webhook` 请求都需要`Authorization: Bearer <token>`。|
-| 3 | **文件系统范围（无/）** | ✅ | 默认`workspace_only = true`。14 个系统目录 + 4 个敏感点文件被阻止。空字节注入被阻止。通过文件读/写工具中的规范化+解析路径工作区检查进行符号链接转义检测。|
-| 4 | **只能通过隧道进入** | ✅ | Gateway 在没有活动隧道的情况下拒绝公共绑定。支持 Tailscale、Cloudflare、ngrok 或任何自定义隧道。|
+| # | 项目 | 状态 | 方式 |
+| --- | --- | --- | --- |
+| 1 | **网关不公网暴露** | ✅ | 默认绑定 `127.0.0.1`。如果没有隧道或显式 `allow_public_bind = true`，则拒绝 `0.0.0.0`。 |
+| 2 | **需要配对** | ✅ | 启动时生成 6 位一次性代码。通过 `POST /pair` 交换 Bearer 令牌。所有 `/webhook` 请求都需要 `Authorization: Bearer <token>`。 |
+| 3 | **文件系统作用域（无 /）** | ✅ | 默认 `workspace_only = true`。阻止 14 个系统目录 + 4 个敏感点文件。阻止空字节注入。通过规范化 + 文件读/写工具中的解析路径工作区检查来检测符号链接逃逸。 |
+| 4 | **仅通过隧道访问** | ✅ | 网关在没有活动隧道时拒绝公共绑定。支持 Tailscale、Cloudflare、ngrok 或任何自定义隧道。 |
 
-> **运行您自己的 nmap：** `nmap -p 1-65535 <your-host>` — ZeroClaw 仅绑定到本地主机，因此除非您显式配置隧道，否则不会暴露任何内容。
+> **运行你自己的 nmap：** `nmap -p 1-65535 <your-host>` — ZeroClaw 仅绑定到 localhost，因此除非你显式配置隧道，否则不会暴露任何内容。
 
-### Channel 白名单 (Telegram / Discord / Slack)
+### 渠道白名单（Telegram / Discord / Slack）
 
 入站发件人策略现在是一致的：
 
@@ -290,12 +290,12 @@ ZeroClaw 在**每一层**强制执行安全性 — — 而不仅仅是沙箱。�
 zeroclaw onboard --channels-only
 ```
 
-### WhatsApp 业务云 API 设置
+### WhatsApp Business Cloud API 设置
 
 WhatsApp 使用 Meta 的 Cloud API 和 webhooks（基于推送，而不是轮询）：
 
 1. **创建 Meta 商业应用程序：**
-   - Go 至[开发者.facebook.com](https://developers.facebook.com)
+   - 前往 [developers.facebook.com](https://developers.facebook.com)
    - 创建新应用→选择“商业”类型
    - 添加“WhatsApp”产品
 
@@ -317,19 +317,19 @@ WhatsApp 使用 Meta 的 Cloud API 和 webhooks（基于推送，而不是轮询
    ```bash
    zeroclaw gateway --port 8080
    ```
-WhatsApp 需要 HTTPS，因此请使用隧道（ngrok、Cloudflare、Tailscale 漏斗）。
+WhatsApp 需要 HTTPS，因此请使用隧道（ngrok、Cloudflare、Tailscale Funnel）。
 
 5. **配置 Meta webhook：**
    - 在 Meta 开发者控制台→WhatsApp→配置→Webhook
-   - **回调网址：** `https://your-tunnel-url/whatsapp`
-   - **验证令牌：**与配置中的`verify_token`相同
+   - **Callback URL：** `https://your-tunnel-url/whatsapp`
+   - **Verify Token：** 与配置中的 `verify_token` 相同
    - 订阅`messages`字段
 
 6. **测试：** 向您的 WhatsApp 企业号码发送消息 — ZeroClaw 将通过 LLM 进行回复。
 
 ## 配置
 
-配置：`~/.zeroclaw/config.toml`（由`onboard`创建）
+配置文件：`~/.zeroclaw/config.toml`（由 `onboard` 创建）
 
 ```toml
 api_key = "sk-..."
@@ -338,91 +338,91 @@ default_model = "anthropic/claude-sonnet-4-20250514"
 default_temperature = 0.7
 
 [memory]
-backend = "sqlite"              # “sqlite”、“清晰”、“markdown”、“无”
+backend = "sqlite"              # "sqlite", "lucid", "markdown", "none"
 auto_save = true
-embedding_provider = "openai"   # “openai”、“noop”
+embedding_provider = "openai"   # "openai", "noop"
 vector_weight = 0.7
 keyword_weight = 0.3
 
-# backend = "none" 通过无操作后端禁用持久内存
+# backend = "none" 使用无操作后端禁用持久化记忆
 
 [gateway]
-require_pairing = true          # 首次连接时需要配对代码
-allow_public_bind = false       # 拒绝没有隧道的 0.0.0.0
+require_pairing = true           # 首次连接需要配对码
+allow_public_bind = false        # 无隧道时拒绝 0.0.0.0
 
 [autonomy]
-level = "supervised"            # “只读”、“受监督”、“完整”（默认: 受监督）
-workspace_only = true           # 默认值：true — 范围为工作区
+level = "supervised"            # "readonly", "supervised", "full"（默认: supervised）
+workspace_only = true            # 默认: true — 作用域限制在工作区
 allowed_commands = ["git", "npm", "cargo", "ls", "cat", "grep"]
 forbidden_paths = ["/etc", "/root", "/proc", "/sys", "~/.ssh", "~/.gnupg", "~/.aws"]
 
 [runtime]
-kind = "native"                # “本地”或“码头工人”
+kind = "native"                 # "native" 或 "docker"
 
 [runtime.docker]
-image = "alpine:3.20"          # 用于 shell 执行的容器镜像
-network = "none"               # docker 网络模式（“无”、“桥接”等）
-memory_limit_mb = 512          # 可选内存限制（MB）
-cpu_limit = 1.0                # 可选 CPU 限制
-read_only_rootfs = true        # 将根文件系统挂载为只读
-mount_workspace = true         # 将工作空间挂载到 /workspace
-allowed_workspace_roots = []   # 用于工作区安装验证的可选允许列表
+image = "alpine:3.20"           # 用于 shell 执行的容器镜像
+network = "none"                # Docker 网络模式（"none", "bridge", 等）
+memory_limit_mb = 512            # 可选内存限制（MB）
+cpu_limit = 1.0                  # 可选 CPU 限制
+read_only_rootfs = true          # 将根文件系统挂载为只读
+mount_workspace = true           # 将工作区挂载到 /workspace
+allowed_workspace_roots = []     # 可选的工作区挂载验证白名单
 
 [heartbeat]
 enabled = false
 interval_minutes = 30
 
 [tunnel]
-provider = "none"               # “无”、“cloudflare”、“tailscale”、“ngrok”、“自定义”
+provider = "none"               # "none", "cloudflare", "tailscale", "ngrok", "custom"
 
 [secrets]
-encrypt = true                  # API 使用本地密钥文件加密的密钥
+encrypt = true                   # API 密钥使用本地密钥文件加密
 
 [browser]
-enabled = false                        # 选择加入 browser_open + 浏览器工具
-allowed_domains = ["docs.rs"]         # 启用浏览器时需要
-backend = "agent_browser"             # “agent_browser”（默认）、“rust_native”、“computer_use”、“auto”
-native_headless = true                 # 当后端使用 Rust-native 时适用
+enabled = false                          # 选择开启 browser_open + browser 工具
+allowed_domains = ["docs.rs"]           # 启用浏览器时必须配置
+backend = "agent_browser"               # "agent_browser"（默认）, "rust_native", "computer_use", "auto"
+native_headless = true                   # 当后端使用 rust-native 时适用
 native_webdriver_url = "http://127.0.0.1:9515" # WebDriver 端点（chromedriver/selenium）
-# native_chrome_path = "/usr/bin/chromium" # 驱动程序的可选显式浏览器二进制文件
+# native_chrome_path = "/usr/bin/chromium"     # 驱动程序的可选显式浏览器二进制路径
 
 [browser.computer_use]
-endpoint = "http://127.0.0.1:8787/v1/actions" # 计算机使用 sidecar HTTP 端点
-timeout_ms = 15000                    # 每个操作超时
-allow_remote_endpoint = false         # 安全默认值：仅私有/本地主机端点
-window_allowlist = []                 # 可选的窗口标题/进程白名单提示
-# api_key = "..." # sidecar 的可选承载令牌
-# max_coordinate_x = 3840 # 可选坐标护栏
-# max_coordinate_y = 2160 # 可选坐标护栏
+endpoint = "http://127.0.0.1:8787/v1/actions" # computer-use sidecar HTTP 端点
+timeout_ms = 15000                           # 每个动作超时时间
+allow_remote_endpoint = false                # 安全默认值：仅私有/localhost 端点
+window_allowlist = []                        # 可选的窗口标题/进程白名单提示
+# api_key = "..."                            # sidecar 的可选 bearer 令牌
+# max_coordinate_x = 3840                    # 可选坐标护栏
+# max_coordinate_y = 2160                    # 可选坐标护栏
 
-# Rust-本机后端构建标志：
-# Cargo build --release --features 浏览器原生
+# Rust-native 后端构建标志：
+# cargo build --release --features browser-native
 # 确保 WebDriver 服务器正在运行，例如 chromedriver --port=9515
 
-# 计算机使用 sidecar 合约 (MVP)
+# Computer-use sidecar 契约 (MVP)
 # POST browser.computer_use.endpoint
-# 要求： {
-# “动作”：“鼠标单击”，
-# “params”：{“x”：640，“y”：360，“按钮”：“左”}，
-# “策略”：{“allowed_domains”：[...]，“window_allowlist”：[...]，“max_coordinate_x”：3840，“max_coordinate_y”：2160}，
-# “元数据”：{“会话名称”：“...”，“源”：“zeroclaw.browser”，“版本”：“...”}
+# 请求: {
+#   "action": "mouse_click",
+#   "params": {"x": 640, "y": 360, "button": "left"},
+#   "policy": {"allowed_domains": [...], "window_allowlist": [...], "max_coordinate_x": 3840, "max_coordinate_y": 2160},
+#   "metadata": {"session_name": "...", "source": "zeroclaw.browser", "version": "..."}
 # }
-# 响应：{"success": true, "data": {...}} 或 {"success": false, "error": "..."}
+# 响应: {"success": true, "data": {...}} 或 {"success": false, "error": "..."}
 
 [composio]
-enabled = false                 # 选择加入：通过 composio.dev 提供 1000 多个 OAuth 应用程序
-# api_key = "cmp_..." # 可选：当 [secrets].encrypt = true 时加密存储
-entity_id = "default"         # Composio 工具调用的默认 user_id
+enabled = false                  # 选择开启：通过 composio.dev 支持 1000+ OAuth 应用
+# api_key = "cmp_..."            # 可选：当 [secrets].encrypt = true 时加密存储
+entity_id = "default"           # Composio 工具调用的默认 user_id
 
 [identity]
-format = "openclaw"             # “openclaw”（默认，markdown 文件）或“aieos”(JSON)
-# aieos_path = "identity.json" # AIEOS JSON 文件的路径（相对于工作空间或绝对路径）
-# aieos_inline = '{"identity":{"names":{"first":"Nova"}}}' # 内联 AIEOS JSON
+format = "openclaw"             # "openclaw"（默认，markdown 文件）或 "aieos"（JSON）
+# aieos_path = "identity.json"   # AIEOS JSON 文件路径（相对于工作区或绝对路径）
+# aieos_inline = '{"identity":{"names":{"first":"Nova"}}}'  # 内联 AIEOS JSON
 ```
 
-## Python 伴侣套餐 (`zeroclaw-tools`)
+## Python 配套包 (`zeroclaw-tools`)
 
-对于具有不一致的本机工具调用的 LLM 提供程序（例如 GLM-5/Zhipu），ZeroClaw 附带了一个 Python 配套包以及 **基于 LangGraph 的工具调用**，以保证一致性：
+对于原生工具调用不一致的 LLM 提供商（例如 GLM-5/Zhipu），ZeroClaw 提供了一个带有 **基于 LangGraph 的工具调用** 的 Python 配套包，以保证一致性：
 
 ```bash
 pip install zeroclaw-tools
@@ -456,7 +456,7 @@ print(result["messages"][-1].content)
 
 ## 身份系统（AIEOS 支持）
 
-ZeroClaw 通过两种格式支持**身份无关**人工智能角色：
+ZeroClaw 通过两种格式支持 **身份无关** 的 AI 人格：
 
 ### OpenClaw（默认）
 
@@ -479,7 +479,7 @@ ZeroClaw 通过两种格式支持**身份无关**人工智能角色：
 ```toml
 [identity]
 format = "aieos"
-aieos_path = "identity.json"  # 相对于工作空间或绝对路径
+aieos_path = "identity.json"  # 相对于工作区或绝对路径
 ```
 
 或内联 JSON：
@@ -512,7 +512,7 @@ aieos_inline = '''
 | 部分 | 描述 |
 |---------|-------------|
 | `identity` | 姓名、简介、出身、居住地 |
-| `psychology` | 神经矩阵（认知权重）、MBTI、海洋、道德指南针 |
+| `psychology` | 神经矩阵（认知权重）、MBTI、OCEAN、道德罗盘 |
 | `linguistics` | 文本风格、形式、流行语、禁用词 |
 | `motivations` | 核心动力、短期/长期目标、恐惧 |
 | `capabilities` | 代理可以使用的技能和工具（tools） |
@@ -522,15 +522,15 @@ aieos_inline = '''
 
 请访问 [aieos.org](https://aieos.org) 查看完整架构和实时示例。
 
-## Gateway API
+## 网关 API
 
 | 端点 | 方法 | 授权 | 描述 |
 |----------|--------|------|-------------|
-| `/health` | 得到 | 没有任何 | 健康检查（始终公开，不泄露秘密） |
-| `/pair` | 邮政 | `X-Pairing-Code`标题 | 将一次性代码兑换为不记名令牌 |
-| `/webhook` | 邮政 | `Authorization: Bearer <token>` | 发送消息：`{"message": "your prompt"}` |
-| `/whatsapp` | 得到 | 查询参数 | Meta webhook 验证（hub.mode、hub.verify_token、hub.challenge） |
-| `/whatsapp` | 邮政 | 无（Meta 签名） | WhatsApp 传入消息 webhook |
+| `/health` | GET | 无 | 健康检查（始终公开，不泄露机密） |
+| `/pair` | POST | `X-Pairing-Code` 头部 | 交换一次性代码以获取 Bearer 令牌 |
+| `/webhook` | POST | `Authorization: Bearer <token>` | 发送消息：`{"message": "your prompt"}` |
+| `/whatsapp` | GET | 查询参数 | Meta webhook 验证（hub.mode、hub.verify_token、hub.challenge） |
+| `/whatsapp` | POST | 无（Meta 签名） | WhatsApp 传入消息 webhook |
 
 ## 命令
 
@@ -610,12 +610,12 @@ ZeroClaw 是一个充满热情维护的开源项目。如果你觉得它有用�
 
 衷心感谢激发和推动这项开源工作的社区和机构：
 
-- **哈佛大学** — — 培养求知欲并突破可能的界限。
-- **麻省理工学院** — — 倡导开放知识、开源以及技术应该为每个人所用的信念。
-- **Sundai Club** — 为社区、活力以及打造重要事物的不懈动力。
-- **世界与彼岸** 🌍✨ — 致每一位贡献者、梦想家和建设者，让开源成为一股向善的力量。这是给您的。
+- **哈佛大学** —— 感谢培养求知欲并推动可能性的边界。
+- **MIT** —— 感谢倡导开放知识、开源以及技术应惠及所有人的信念。
+- **Sundai Club** —— 感谢这个社区、活力以及构建有意义事物的不懈动力。
+- **世界及彼岸** 🌍✨ —— 致每一位贡献者、梦想家和让开源成为向善力量的建设者。这是献给你们的。
 
-我们正在公开建设，因为最好的想法来自四面八方。如果您正在阅读本文，那么您就是其中的一部分。欢迎。🦀❤️
+我们公开构建，因为最好的想法来自任何地方。如果你正在阅读这篇文章，你就是其中的一部分。欢迎。🦀❤️
 
 ## 许可证
 
@@ -625,18 +625,18 @@ Apache 2.0 — 详见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)（贡献者署名�
 
 见 [CONTRIBUTING.md](CONTRIBUTING.md)。实现一个 Trait，提交 PR：
 - CI 工作流指南: [docs/ci-map.md](docs/ci-map.md)
-- 新`Provider` → `src/providers/`
-- 新`Channel` → `src/channels/`
-- 新`Observer` → `src/observability/`
-- 新`Tool` → `src/tools/`
-- 新`Memory` → `src/memory/`
-- 新`Tunnel` → `src/tunnel/`
-- 新`Skill` → `~/.zeroclaw/workspace/skills/<name>/`
+- 新 `Provider` → `src/providers/`
+- 新 `Channel` → `src/channels/`
+- 新 `Observer` → `src/observability/`
+- 新 `Tool` → `src/tools/`
+- 新 `Memory` → `src/memory/`
+- 新 `Tunnel` → `src/tunnel/`
+- 新 `Skill` → `~/.zeroclaw/workspace/skills/<name>/`
 
 
 ---
 
-**ZeroClaw** — 零开销。零妥协。随处部署。万物可换。🦀
+**ZeroClaw** — 零开销，零妥协；随处部署，万物可换。 🦀
 
 ## Star History
 
