@@ -361,6 +361,66 @@ impl DeviceRegistry {
     }
 }
 
+impl DeviceRegistry {
+    /// Reconnect a device after reboot/reflash.
+    ///
+    /// Drops the old transport, creates a fresh [`HardwareSerialTransport`] for
+    /// the given (or existing) port path, runs the ping handshake to confirm
+    /// ZeroClaw firmware is alive, and re-attaches the transport.
+    ///
+    /// Pass `new_port` when the OS assigned a different path after reboot;
+    /// pass `None` to reuse the device's current path.
+    #[cfg(feature = "hardware")]
+    pub async fn reconnect(
+        &mut self,
+        alias: &str,
+        new_port: Option<&str>,
+    ) -> anyhow::Result<()> {
+        use super::serial::{HardwareSerialTransport, DEFAULT_BAUD};
+
+        let entry = self
+            .devices
+            .get_mut(alias)
+            .ok_or_else(|| anyhow::anyhow!("unknown device alias: {alias}"))?;
+
+        // Determine the port path — prefer the caller's override.
+        let port_path = match new_port {
+            Some(p) => {
+                // Update the device record with the new path.
+                let mut updated = (*entry.device).clone();
+                updated.device_path = Some(p.to_string());
+                entry.device = Arc::new(updated);
+                p.to_string()
+            }
+            None => entry
+                .device
+                .device_path
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("device {alias} has no port path"))?,
+        };
+
+        // Drop the stale transport.
+        entry.transport = None;
+
+        // Create a fresh transport and verify firmware is alive.
+        let transport = HardwareSerialTransport::new(&port_path, DEFAULT_BAUD);
+        if !transport.ping_handshake().await {
+            anyhow::bail!(
+                "ping handshake failed after reconnect on {port_path} — \
+                 firmware may not be running"
+            );
+        }
+
+        entry.transport = Some(
+            Arc::new(transport) as Arc<dyn super::transport::Transport>
+        );
+        entry.capabilities.gpio = true;
+
+        tracing::info!(alias = %alias, port = %port_path, "device reconnected");
+        Ok(())
+    }
+}
+
 impl Default for DeviceRegistry {
     fn default() -> Self {
         Self::new()

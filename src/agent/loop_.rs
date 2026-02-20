@@ -346,6 +346,41 @@ fn parse_tool_calls_from_json_value(value: &serde_json::Value) -> Vec<ParsedTool
     calls
 }
 
+/// Parse a shorthand tool call emitted without the `{"name":…,"arguments":…}` wrapper.
+///
+/// Some models emit `toolname{"arg":value}` directly inside `<tool_call>` tags
+/// when they haven't fully internalised the wrapper protocol.  This function
+/// recovers the name from the identifier prefix and the arguments from the
+/// trailing JSON object.
+///
+/// Only called on content already inside a `<tool_call>` tag — trusted LLM output.
+fn parse_shorthand_tag_call(text: &str) -> Option<ParsedToolCall> {
+    let brace = text.find('{')?;
+    let prefix = text[..brace].trim();
+    if prefix.is_empty() {
+        return None;
+    }
+    // Identifier must start with a letter and contain only [a-z0-9_]
+    let mut chars = prefix.chars();
+    if !chars.next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false) {
+        return None;
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    // Parse just the JSON object — allow trailing garbage after the closing `}`
+    let args_str = &text[brace..];
+    let mut stream = serde_json::Deserializer::from_str(args_str).into_iter::<serde_json::Value>();
+    let args = stream.next()?.ok()?;
+    if !args.is_object() {
+        return None;
+    }
+    Some(ParsedToolCall {
+        name: prefix.to_string(),
+        arguments: args,
+    })
+}
+
 const TOOL_CALL_OPEN_TAGS: [&str; 4] = ["<tool_call>", "<toolcall>", "<tool-call>", "<invoke>"];
 
 fn find_first_tag<'a>(haystack: &str, tags: &'a [&'a str]) -> Option<(usize, &'a str)> {
@@ -663,6 +698,18 @@ fn parse_tool_calls(response: &str) -> (String, Vec<ParsedToolCall>) {
                     remaining = strip_leading_close_tags(&after_open[consumed_end..]);
                     continue;
                 }
+            }
+
+            // Last resort: shorthand `toolname{args}` without JSON wrapper.
+            if let Some(call) = parse_shorthand_tag_call(after_open) {
+                tracing::debug!(
+                    tool = %call.name,
+                    "parsed shorthand tool call (toolname{{args}} format)"
+                );
+                calls.push(call);
+                // Consume the whole fragment; nothing meaningful remains.
+                remaining = "";
+                continue;
             }
 
             remaining = &remaining[start..];

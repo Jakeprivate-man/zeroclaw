@@ -516,9 +516,12 @@ mod tests {
             .await;
         assert!(result.is_err());
 
-        // Missing device
-        let result = tool.execute(json!({"pin": 25, "value": 1})).await;
-        assert!(result.is_err());
+        // Missing device with empty registry — auto-select finds no GPIO device → Ok(failure)
+        let empty_reg = Arc::new(RwLock::new(DeviceRegistry::new()));
+        let tool_no_reg = GpioWriteTool::new(empty_reg);
+        let result = tool_no_reg.execute(json!({"pin": 25, "value": 1})).await.unwrap();
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap_or("").contains("no GPIO"));
 
         // Missing value
         let result = tool
@@ -610,9 +613,12 @@ mod tests {
         let result = tool.execute(json!({"device": "pico0"})).await;
         assert!(result.is_err());
 
-        // Missing device
-        let result = tool.execute(json!({"pin": 25})).await;
-        assert!(result.is_err());
+        // Missing device with empty registry — auto-select finds no GPIO device → Ok(failure)
+        let empty_reg = Arc::new(RwLock::new(DeviceRegistry::new()));
+        let tool_no_reg = GpioReadTool::new(empty_reg);
+        let result = tool_no_reg.execute(json!({"pin": 25})).await.unwrap();
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap_or("").contains("no GPIO"));
     }
 
     // ── Factory / spec tests ─────────────────────────────────────────────
@@ -636,7 +642,7 @@ mod tests {
         assert!(spec.parameters["properties"]["pin"].is_object());
         assert!(spec.parameters["properties"]["value"].is_object());
         let required = spec.parameters["required"].as_array().unwrap();
-        assert_eq!(required.len(), 3);
+        assert_eq!(required.len(), 2, "required should be [pin, value]");
     }
 
     #[test]
@@ -648,6 +654,6 @@ mod tests {
         assert!(spec.parameters["properties"]["device"].is_object());
         assert!(spec.parameters["properties"]["pin"].is_object());
         let required = spec.parameters["required"].as_array().unwrap();
-        assert_eq!(required.len(), 2);
+        assert_eq!(required.len(), 1, "required should be [pin]");
     }
 }

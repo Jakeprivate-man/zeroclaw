@@ -74,6 +74,17 @@ impl ToolRegistry {
             tools.insert(name, tool);
         }
 
+        // pico_flash — hardware feature only (needs UF2 assets embedded at compile time)
+        #[cfg(feature = "hardware")]
+        {
+            let tool: Box<dyn Tool> = Box::new(
+                super::pico_flash::PicoFlashTool::new(devices.clone()),
+            );
+            let name = tool.name().to_string();
+            println!("[registry] loaded built-in: {}", name);
+            tools.insert(name, tool);
+        }
+
         // ── 2. User plugins ───────────────────────────────────────────────
         let plugins = scan_plugin_dir();
         for plugin in plugins {

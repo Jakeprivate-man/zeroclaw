@@ -16,6 +16,12 @@ pub mod introspect;
 #[cfg(feature = "hardware")]
 pub mod serial;
 
+#[cfg(feature = "hardware")]
+pub mod uf2;
+
+#[cfg(feature = "hardware")]
+pub mod pico_flash;
+
 pub mod gpio;
 
 // ── Phase 4: ToolRegistry + plugin system ─────────────────────────────────────
@@ -105,6 +111,12 @@ pub async fn boot(peripherals: &crate::config::PeripheralsConfig) -> anyhow::Res
                 "pre-registered config board with lazy serial transport"
             );
         }
+    }
+
+    // BOOTSEL auto-detect: warn the user if a Pico is in BOOTSEL mode at startup.
+    if uf2::find_rpi_rp2_mount().is_some() {
+        tracing::info!("Pico detected in BOOTSEL mode (RPI-RP2 drive found)");
+        tracing::info!("Say \"flash my pico\" to install ZeroClaw firmware automatically");
     }
 
     let devices = std::sync::Arc::new(tokio::sync::RwLock::new(registry_inner));

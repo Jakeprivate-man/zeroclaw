@@ -209,9 +209,6 @@ pub async fn create_peripheral_tools(config: &PeripheralsConfig) -> Result<Vec<B
     if !tools.is_empty() {
         let board_names: Vec<String> = config.boards.iter().map(|b| b.board.clone()).collect();
         tools.push(Box::new(HardwareMemoryMapTool::new(board_names.clone())));
-        tools.push(Box::new(crate::tools::HardwareBoardInfoTool::new(
-            board_names.clone(),
-        )));
         tools.push(Box::new(crate::tools::HardwareMemoryReadTool::new(
             board_names,
         )));
