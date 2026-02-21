@@ -228,6 +228,9 @@ def render() -> None:
         # Per-agent stats table (scoped to selected run when set)
         delegation_charts.render_agent_stats_table(run_id=selected_run_id)
 
+        # Per-model stats table (scoped to selected run when set)
+        delegation_charts.render_model_stats_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
@@ -282,6 +285,10 @@ def render() -> None:
               delegation count, ended count, success %, average duration, total tokens,
               and total cost; mirrors `zeroclaw delegations stats`; scoped by the
               shared run selector
+            - **Model Stats table** — sortable dataframe with one row per model:
+              delegation count, ended count, success %, total tokens, and total cost;
+              mirrors `zeroclaw delegations models`; scoped by the shared run selector;
+              useful for comparing token/cost footprint across provider models
             - **Agent Leaderboard** — horizontal bar chart ranking all agents by
               cumulative tokens or cost across every stored run; rank-by and top-N
               controls mirror `zeroclaw delegations top`; falls back to a mock
