@@ -611,6 +611,97 @@ def render_cost_by_agent(run_id: Optional[str] = None) -> None:
     st.plotly_chart(fig, use_container_width=True)
 
 
+def render_agent_leaderboard() -> None:
+    """Ranked horizontal bar chart — global agent leaderboard by tokens or cost.
+
+    Mirrors ``zeroclaw delegations top --by <metric> --limit <n>``.
+    Aggregates across **all** stored runs (not scoped to the shared run
+    selector). Two controls let the user choose the ranking metric and the
+    number of agents to display.
+
+    Falls back gracefully to mock data when no real log is present.
+    """
+    st.markdown("#### Agent Leaderboard")
+
+    ctrl_col1, ctrl_col2 = st.columns([2, 1])
+    with ctrl_col1:
+        rank_by = st.radio(
+            "Rank by",
+            options=["Tokens", "Cost (USD)"],
+            horizontal=True,
+            key="leaderboard_rank_by",
+            help="Sort agents by cumulative token usage or total cost across all runs",
+        )
+    with ctrl_col2:
+        limit_opt = st.selectbox(
+            "Show top",
+            options=[5, 10, 20, "All"],
+            index=1,  # default: top 10
+            key="leaderboard_limit",
+            format_func=lambda x: f"Top {x}" if isinstance(x, int) else "All agents",
+        )
+
+    parser = DelegationParser()
+    nodes = _collect_all_nodes(parser)  # transparent mock fallback when log is absent
+
+    # Aggregate per agent
+    agg: dict = {}
+    for node in nodes:
+        name = node.agent_name
+        if name not in agg:
+            agg[name] = {"tokens": 0, "cost": 0.0}
+        if node.tokens_used is not None:
+            agg[name]["tokens"] += node.tokens_used
+        if node.cost_usd is not None:
+            agg[name]["cost"] += node.cost_usd
+
+    if not agg:
+        st.caption("No delegation data available.")
+        return
+
+    # Sort by chosen metric, descending
+    metric_key = "tokens" if rank_by == "Tokens" else "cost"
+    sorted_agents = sorted(agg.items(), key=lambda x: x[1][metric_key], reverse=True)
+
+    # Apply limit
+    if isinstance(limit_opt, int):
+        sorted_agents = sorted_agents[:limit_opt]
+
+    # Reverse for bottom-up display in horizontal bar chart
+    display_agents = [a for a, _ in sorted_agents][::-1]
+    display_values = [d[metric_key] for _, d in sorted_agents][::-1]
+
+    if rank_by == "Tokens":
+        title = "Agent Leaderboard — Total Tokens (all runs)"
+        x_label = "Total Tokens"
+        hover = "%{y}<br>Tokens: %{x:,}<extra></extra>"
+        bar_color = _GREEN_PRIMARY
+    else:
+        title = "Agent Leaderboard — Total Cost USD (all runs)"
+        x_label = "Total Cost (USD)"
+        hover = "%{y}<br>Cost: $%{x:.4f}<extra></extra>"
+        bar_color = _GREEN_LIGHT
+
+    chart_height = max(180, len(display_agents) * 32 + 80)
+    fig = go.Figure(
+        go.Bar(
+            x=display_values,
+            y=display_agents,
+            orientation="h",
+            marker_color=bar_color,
+            hovertemplate=hover,
+        )
+    )
+    fig.update_layout(
+        **_PLOTLY_LAYOUT,
+        title=title,
+        xaxis_title=x_label,
+        yaxis_title="Agent",
+        height=chart_height,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
 def render_run_diff() -> None:
     """Side-by-side run comparison — tokens and cost per agent for two selected runs.
 

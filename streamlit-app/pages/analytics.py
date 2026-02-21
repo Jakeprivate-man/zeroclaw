@@ -211,6 +211,9 @@ def render() -> None:
         with chart_col4:
             delegation_charts.render_success_rate_by_depth()
 
+        # Agent leaderboard (global, all runs, mirrors zeroclaw delegations top)
+        delegation_charts.render_agent_leaderboard()
+
         # Run Comparison (mirrors zeroclaw delegations diff)
         delegation_charts.render_run_diff()
 
@@ -279,6 +282,10 @@ def render() -> None:
               delegation count, ended count, success %, average duration, total tokens,
               and total cost; mirrors `zeroclaw delegations stats`; scoped by the
               shared run selector
+            - **Agent Leaderboard** — horizontal bar chart ranking all agents by
+              cumulative tokens or cost across every stored run; rank-by and top-N
+              controls mirror `zeroclaw delegations top`; falls back to a mock
+              example when no real delegation data is available
             - **Run Comparison** — side-by-side grouped bar charts (tokens and cost
               per agent) comparing two independently selected runs; four aggregate
               Δ metrics show the net change in total tokens and cost between runs;
