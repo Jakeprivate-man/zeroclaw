@@ -392,7 +392,9 @@ Examples:
   zeroclaw delegations               # overall summary
   zeroclaw delegations list          # all runs, newest first
   zeroclaw delegations show          # tree for most recent run
-  zeroclaw delegations show --run <id>  # tree for a specific run")]
+  zeroclaw delegations show --run <id>  # tree for a specific run
+  zeroclaw delegations stats         # per-agent stats (all runs)
+  zeroclaw delegations stats --run <id>  # per-agent stats for one run")]
     Delegations {
         #[command(subcommand)]
         delegation_command: Option<DelegationCommands>,
@@ -422,6 +424,12 @@ enum DelegationCommands {
     /// Show delegation tree for a run (default: most recent)
     Show {
         /// Run ID to display (default: most recent run)
+        #[arg(long)]
+        run: Option<String>,
+    },
+    /// Show per-agent statistics: count, success rate, avg duration, tokens, cost
+    Stats {
+        /// Scope to a specific run ID (default: aggregate across all runs)
         #[arg(long)]
         run: Option<String>,
     },
@@ -1027,6 +1035,9 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::Show { run }) => {
                     observability::delegation_report::print_tree(&log_path, run.as_deref())
+                }
+                Some(DelegationCommands::Stats { run }) => {
+                    observability::delegation_report::print_stats(&log_path, run.as_deref())
                 }
             }
         }

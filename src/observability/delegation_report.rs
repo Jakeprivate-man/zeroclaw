@@ -1,9 +1,11 @@
 //! CLI-facing delegation log reporter.
 //!
-//! Three public entry points used by `zeroclaw delegations [list|show]`:
+//! Public entry points used by `zeroclaw delegations [list|show|stats]`:
 //! - [`print_summary`]: overall totals across all stored runs.
 //! - [`print_runs`]: table of runs, newest first.
 //! - [`print_tree`]: indented delegation tree for one run.
+//! - [`print_stats`]: per-agent aggregated statistics table.
+//! - [`get_log_summary`]: programmatic aggregate for `zeroclaw status`.
 //!
 //! All parsing is done via `serde_json::Value` — no new dependencies.
 
@@ -19,6 +21,16 @@ struct RunInfo {
     run_id: String,
     start_time: Option<DateTime<Utc>>,
     delegation_count: usize,
+    total_tokens: u64,
+    total_cost_usd: f64,
+}
+
+struct AgentStats {
+    agent_name: String,
+    delegation_count: usize,
+    end_count: usize,
+    success_count: usize,
+    total_duration_ms: u64,
     total_tokens: u64,
     total_cost_usd: f64,
 }
@@ -97,6 +109,51 @@ fn collect_runs(events: &[Value]) -> Vec<RunInfo> {
     // newest first
     runs.sort_by(|a, b| b.start_time.cmp(&a.start_time));
     runs
+}
+
+fn collect_agent_stats(events: &[Value]) -> Vec<AgentStats> {
+    let mut map: HashMap<String, AgentStats> = HashMap::new();
+    for ev in events {
+        let Some(name) = ev.get("agent_name").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let entry = map.entry(name.to_owned()).or_insert_with(|| AgentStats {
+            agent_name: name.to_owned(),
+            delegation_count: 0,
+            end_count: 0,
+            success_count: 0,
+            total_duration_ms: 0,
+            total_tokens: 0,
+            total_cost_usd: 0.0,
+        });
+        match ev.get("event_type").and_then(|x| x.as_str()) {
+            Some("DelegationStart") => entry.delegation_count += 1,
+            Some("DelegationEnd") => {
+                entry.end_count += 1;
+                if ev.get("success").and_then(|x| x.as_bool()).unwrap_or(false) {
+                    entry.success_count += 1;
+                }
+                if let Some(dur) = ev.get("duration_ms").and_then(|x| x.as_u64()) {
+                    entry.total_duration_ms += dur;
+                }
+                if let Some(tok) = ev.get("tokens_used").and_then(|x| x.as_u64()) {
+                    entry.total_tokens += tok;
+                }
+                if let Some(cost) = ev.get("cost_usd").and_then(|x| x.as_f64()) {
+                    entry.total_cost_usd += cost;
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut stats: Vec<AgentStats> = map.into_values().collect();
+    // Heaviest first (most tokens), then alphabetical as tiebreaker.
+    stats.sort_by(|a, b| {
+        b.total_tokens
+            .cmp(&a.total_tokens)
+            .then(a.agent_name.cmp(&b.agent_name))
+    });
+    stats
 }
 
 // ─── Node matching ────────────────────────────────────────────────────────────
@@ -215,6 +272,106 @@ pub fn get_log_summary(log_path: &Path) -> Result<Option<LogSummary>> {
         total_cost_usd,
         latest_run_time,
     }))
+}
+
+/// Print a per-agent statistics table to stdout.
+///
+/// When `run_id` is `Some`, only events from that run are included.
+/// `None` aggregates across all stored runs.
+///
+/// Columns: agent | count | ok% | avg_dur | tokens | cost
+/// Rows are sorted by total tokens descending (heaviest agent first).
+pub fn print_stats(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    // Optional run filter — consume all_events to avoid cloning.
+    let events: Vec<Value> = if let Some(rid) = run_id {
+        all_events
+            .into_iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    let stats = collect_agent_stats(&events);
+    if stats.is_empty() {
+        println!("No delegation events found.");
+        return Ok(());
+    }
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!("Delegation Stats{scope}");
+    println!();
+    println!(
+        "{:<26} {:>6}  {:>6}  {:>8}  {:>10}  {:>10}",
+        "agent", "count", "ok%", "avg_dur", "tokens", "cost"
+    );
+    println!("{}", "─".repeat(76));
+
+    for s in &stats {
+        let ok_pct = if s.end_count > 0 {
+            format!("{:.1}%", 100.0 * s.success_count as f64 / s.end_count as f64)
+        } else {
+            "—".to_owned()
+        };
+        let avg_dur = if s.end_count > 0 {
+            fmt_duration(s.total_duration_ms / s.end_count as u64)
+        } else {
+            "—".to_owned()
+        };
+        let tokens = if s.total_tokens > 0 {
+            s.total_tokens.to_string()
+        } else {
+            "—".to_owned()
+        };
+        let cost = if s.total_cost_usd > 0.0 {
+            format!("${:.4}", s.total_cost_usd)
+        } else {
+            "—".to_owned()
+        };
+        println!(
+            "{:<26} {:>6}  {:>6}  {:>8}  {:>10}  {:>10}",
+            s.agent_name, s.delegation_count, ok_pct, avg_dur, tokens, cost
+        );
+    }
+
+    println!("{}", "─".repeat(76));
+    let total_count: usize = stats.iter().map(|s| s.delegation_count).sum();
+    let total_tokens: u64 = stats.iter().map(|s| s.total_tokens).sum();
+    let total_cost: f64 = stats.iter().map(|s| s.total_cost_usd).sum();
+    println!(
+        "{:<26} {:>6}  {:>6}  {:>8}  {:>10}  {:>10}",
+        "TOTAL",
+        total_count,
+        "",
+        "",
+        if total_tokens > 0 {
+            total_tokens.to_string()
+        } else {
+            "—".to_owned()
+        },
+        if total_cost > 0.0 {
+            format!("${:.4}", total_cost)
+        } else {
+            "—".to_owned()
+        }
+    );
+    println!();
+    println!("Use `zeroclaw delegations stats --run <id>` to scope to one run.");
+    Ok(())
 }
 
 /// Print a one-line summary of all stored delegation runs to stdout.
@@ -551,6 +708,76 @@ mod tests {
         assert_eq!(fmt_duration(500), "500ms");
         assert_eq!(fmt_duration(1000), "1.00s");
         assert_eq!(fmt_duration(2500), "2.50s");
+    }
+
+    #[test]
+    fn collect_agent_stats_aggregates_by_agent_name() {
+        let events = vec![
+            make_start("run-a", "main", 0, "2026-01-01T10:00:00Z"),
+            make_end("run-a", "main", 0, "2026-01-01T10:00:05Z", 1000, 0.003, true),
+            make_start("run-a", "sub", 1, "2026-01-01T10:00:01Z"),
+            make_end("run-a", "sub", 1, "2026-01-01T10:00:04Z", 500, 0.001, true),
+            make_start("run-a", "main", 0, "2026-01-01T11:00:00Z"),
+            make_end("run-a", "main", 0, "2026-01-01T11:00:05Z", 2000, 0.006, false),
+        ];
+        let stats = collect_agent_stats(&events);
+        let main = stats.iter().find(|s| s.agent_name == "main").unwrap();
+        let sub = stats.iter().find(|s| s.agent_name == "sub").unwrap();
+        assert_eq!(main.delegation_count, 2);
+        assert_eq!(main.end_count, 2);
+        assert_eq!(main.total_tokens, 3000);
+        assert_eq!(sub.delegation_count, 1);
+        assert_eq!(sub.total_tokens, 500);
+    }
+
+    #[test]
+    fn collect_agent_stats_tracks_success_and_duration() {
+        let events = vec![
+            make_start("run-a", "main", 0, "2026-01-01T10:00:00Z"),
+            make_end("run-a", "main", 0, "2026-01-01T10:00:05Z", 100, 0.001, true),
+            make_start("run-a", "main", 0, "2026-01-01T11:00:00Z"),
+            make_end("run-a", "main", 0, "2026-01-01T11:00:05Z", 200, 0.002, false),
+        ];
+        let stats = collect_agent_stats(&events);
+        let main = stats.iter().find(|s| s.agent_name == "main").unwrap();
+        assert_eq!(main.success_count, 1);
+        assert_eq!(main.end_count, 2);
+        // duration_ms from make_end is always 1000 (see fixture above)
+        assert_eq!(main.total_duration_ms, 2000);
+    }
+
+    #[test]
+    fn collect_agent_stats_sorts_tokens_descending() {
+        let events = vec![
+            make_start("run-a", "light", 1, "2026-01-01T10:00:00Z"),
+            make_end("run-a", "light", 1, "2026-01-01T10:00:01Z", 100, 0.0001, true),
+            make_start("run-a", "heavy", 0, "2026-01-01T10:00:00Z"),
+            make_end("run-a", "heavy", 0, "2026-01-01T10:00:05Z", 5000, 0.015, true),
+        ];
+        let stats = collect_agent_stats(&events);
+        assert_eq!(stats.len(), 2);
+        assert_eq!(stats[0].agent_name, "heavy"); // most tokens first
+        assert_eq!(stats[1].agent_name, "light");
+    }
+
+    #[test]
+    fn print_stats_on_missing_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_stats_missing.jsonl");
+        let _ = std::fs::remove_file(&path);
+        assert!(print_stats(&path, None).is_ok());
+    }
+
+    #[test]
+    fn print_stats_with_run_filter_excludes_other_runs() {
+        let path = std::env::temp_dir().join("zeroclaw_test_stats_filter.jsonl");
+        let mut lines = Vec::new();
+        lines.push(serde_json::to_string(&make_start("run-keep", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-keep", "main", 0, "2026-01-01T10:00:05Z", 999, 0.003, true)).unwrap());
+        lines.push(serde_json::to_string(&make_start("run-skip", "other", 0, "2026-01-02T10:00:00Z")).unwrap());
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_stats(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
     }
 
     #[test]
