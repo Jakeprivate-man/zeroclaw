@@ -142,6 +142,16 @@ def _render_node(node: DelegationNode, depth: int, is_last: bool) -> None:
             if node.run_id:
                 st.markdown(f"**Run:** `{node.run_id[:16]}…`")
 
+        if node.tokens_used is not None or node.cost_usd is not None:
+            st.markdown("---")
+            tcol1, tcol2 = st.columns(2)
+            with tcol1:
+                if node.tokens_used is not None:
+                    st.metric("Tokens", f"{node.tokens_used:,}")
+            with tcol2:
+                if node.cost_usd is not None:
+                    st.metric("Cost", f"${node.cost_usd:.4f}")
+
         if node.is_complete:
             if node.success:
                 st.success("✅ Delegation completed successfully")
@@ -198,6 +208,8 @@ def render_delegation_summary(run_id: Optional[str] = None) -> None:
     failed = sum(1 for n in all_nodes if n.is_complete and not n.success)
     max_depth = max((n.depth for n in all_nodes), default=0)
     distinct_runs = len({n.run_id for n in all_nodes if n.run_id})
+    total_tokens = sum(n.tokens_used for n in all_nodes if n.tokens_used is not None)
+    total_cost = sum(n.cost_usd for n in all_nodes if n.cost_usd is not None)
 
     col1, col2, col3, col4, col5 = st.columns(5)
 
@@ -239,3 +251,19 @@ def render_delegation_summary(run_id: Optional[str] = None) -> None:
             distinct_runs,
             help="Number of distinct process runs in log"
         )
+
+    if total_tokens > 0 or total_cost > 0:
+        st.markdown("---")
+        tcol1, tcol2 = st.columns(2)
+        with tcol1:
+            st.metric(
+                "Total Tokens",
+                f"{total_tokens:,}",
+                help="Total tokens consumed across all delegations"
+            )
+        with tcol2:
+            st.metric(
+                "Total Cost",
+                f"${total_cost:.4f}",
+                help="Estimated total cost across all delegations"
+            )
