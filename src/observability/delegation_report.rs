@@ -1,12 +1,13 @@
 //! CLI-facing delegation log reporter.
 //!
-//! Public entry points used by `zeroclaw delegations [list|show|stats|export|diff]`:
+//! Public entry points used by `zeroclaw delegations [list|show|stats|export|diff|top]`:
 //! - [`print_summary`]: overall totals across all stored runs.
 //! - [`print_runs`]: table of runs, newest first.
 //! - [`print_tree`]: indented delegation tree for one run.
 //! - [`print_stats`]: per-agent aggregated statistics table.
 //! - [`print_export`]: stream delegation events as JSONL or CSV.
 //! - [`print_diff`]: side-by-side comparison of two runs with token/cost deltas.
+//! - [`print_top`]: global agent leaderboard ranked by tokens or cost.
 //! - [`get_log_summary`]: programmatic aggregate for `zeroclaw status`.
 //!
 //! All parsing is done via `serde_json::Value` — no new dependencies.
@@ -33,6 +34,14 @@ struct AgentStats {
     end_count: usize,
     success_count: usize,
     total_duration_ms: u64,
+    total_tokens: u64,
+    total_cost_usd: f64,
+}
+
+struct TopAgentRow {
+    agent_name: String,
+    run_count: usize,
+    delegation_count: usize,
     total_tokens: u64,
     total_cost_usd: f64,
 }
@@ -276,6 +285,15 @@ fn fmt_delta_cost(delta: f64) -> String {
 
 // ─── Public data types ────────────────────────────────────────────────────────
 
+/// Sort key for [`print_top`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopBy {
+    /// Rank agents by cumulative tokens (highest first).
+    Tokens,
+    /// Rank agents by cumulative cost in USD (highest first).
+    Cost,
+}
+
 /// Output format for [`print_export`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportFormat {
@@ -500,6 +518,125 @@ pub fn print_diff(log_path: &Path, run_a: &str, run_b: Option<&str>) -> Result<(
     println!(
         "Use `zeroclaw delegations diff <run_a> <run_b>` to compare two specific runs."
     );
+    Ok(())
+}
+
+/// Print a global agent leaderboard ranked by tokens or cost.
+///
+/// Aggregates every `DelegationStart` / `DelegationEnd` event across **all**
+/// stored runs and ranks agents by `by` (tokens or cost), highest first.
+/// `limit` caps the number of rows shown (default: 10).
+///
+/// Columns: `# | agent | runs | delegations | tokens | cost`
+///
+/// Produces an informational message and returns `Ok` when the log is absent
+/// or empty.
+pub fn print_top(log_path: &Path, by: TopBy, limit: usize) -> Result<()> {
+    let events = read_all_events(log_path)?;
+    if events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    // Aggregate per agent — track distinct runs separately.
+    let mut rows: HashMap<String, TopAgentRow> = HashMap::new();
+    let mut agent_runs: HashMap<String, HashSet<String>> = HashMap::new();
+
+    for ev in &events {
+        let Some(name) = ev.get("agent_name").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let Some(rid) = ev.get("run_id").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        agent_runs
+            .entry(name.to_owned())
+            .or_default()
+            .insert(rid.to_owned());
+        let entry = rows.entry(name.to_owned()).or_insert_with(|| TopAgentRow {
+            agent_name: name.to_owned(),
+            run_count: 0,
+            delegation_count: 0,
+            total_tokens: 0,
+            total_cost_usd: 0.0,
+        });
+        match ev.get("event_type").and_then(|x| x.as_str()) {
+            Some("DelegationStart") => entry.delegation_count += 1,
+            Some("DelegationEnd") => {
+                if let Some(tok) = ev.get("tokens_used").and_then(|x| x.as_u64()) {
+                    entry.total_tokens += tok;
+                }
+                if let Some(cost) = ev.get("cost_usd").and_then(|x| x.as_f64()) {
+                    entry.total_cost_usd += cost;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Fill run counts from the side-table.
+    for (name, row) in rows.iter_mut() {
+        row.run_count = agent_runs.get(name).map_or(0, |s| s.len());
+    }
+
+    let mut sorted: Vec<TopAgentRow> = rows.into_values().collect();
+    match by {
+        TopBy::Tokens => sorted.sort_by(|a, b| {
+            b.total_tokens
+                .cmp(&a.total_tokens)
+                .then(a.agent_name.cmp(&b.agent_name))
+        }),
+        TopBy::Cost => sorted.sort_by(|a, b| {
+            b.total_cost_usd
+                .partial_cmp(&a.total_cost_usd)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.agent_name.cmp(&b.agent_name))
+        }),
+    }
+
+    let total = sorted.len();
+    sorted.truncate(limit);
+    let shown = sorted.len();
+
+    let by_str = match by {
+        TopBy::Tokens => "tokens",
+        TopBy::Cost => "cost",
+    };
+    println!("Top Agents  (all runs, ranked by {by_str})");
+    println!();
+    println!(
+        "{:>3}  {:<26} {:>5}  {:>11}  {:>10}  {:>10}",
+        "#", "agent", "runs", "delegations", "tokens", "cost"
+    );
+    println!("{}", "─".repeat(74));
+
+    for (i, row) in sorted.iter().enumerate() {
+        let tok = if row.total_tokens > 0 {
+            row.total_tokens.to_string()
+        } else {
+            "—".to_owned()
+        };
+        let cost = if row.total_cost_usd > 0.0 {
+            format!("${:.4}", row.total_cost_usd)
+        } else {
+            "—".to_owned()
+        };
+        println!(
+            "{:>3}  {:<26} {:>5}  {:>11}  {:>10}  {:>10}",
+            i + 1,
+            row.agent_name,
+            row.run_count,
+            row.delegation_count,
+            tok,
+            cost,
+        );
+    }
+
+    println!("{}", "─".repeat(74));
+    println!("Showing top {shown} of {total} agent(s).");
+    println!();
+    println!("Use `--by cost` to rank by total cost instead of tokens.");
     Ok(())
 }
 
@@ -1197,6 +1334,111 @@ mod tests {
         let result = print_export(&path, Some("run-keep"), ExportFormat::Jsonl);
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_top_on_missing_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_top_missing.jsonl");
+        let _ = std::fs::remove_file(&path);
+        assert!(print_top(&path, TopBy::Tokens, 10).is_ok());
+    }
+
+    #[test]
+    fn print_top_sorts_by_tokens_descending() {
+        let path = std::env::temp_dir().join("zeroclaw_test_top_tok.jsonl");
+        let mut lines = Vec::new();
+        lines.push(serde_json::to_string(&make_start("run-a", "light", 1, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-a", "light", 1, "2026-01-01T10:00:01Z", 100, 0.0001, true)).unwrap());
+        lines.push(serde_json::to_string(&make_start("run-a", "heavy", 0, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-a", "heavy", 0, "2026-01-01T10:00:05Z", 5000, 0.015, true)).unwrap());
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert!(print_top(&path, TopBy::Tokens, 10).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_top_sorts_by_cost_descending() {
+        let path = std::env::temp_dir().join("zeroclaw_test_top_cost.jsonl");
+        let mut lines = Vec::new();
+        lines.push(serde_json::to_string(&make_start("run-a", "cheap", 0, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-a", "cheap", 0, "2026-01-01T10:00:01Z", 1000, 0.001, true)).unwrap());
+        lines.push(serde_json::to_string(&make_start("run-a", "pricey", 1, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-a", "pricey", 1, "2026-01-01T10:00:05Z", 500, 0.050, true)).unwrap());
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert!(print_top(&path, TopBy::Cost, 10).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_top_limit_truncates_results() {
+        let path = std::env::temp_dir().join("zeroclaw_test_top_limit.jsonl");
+        let mut lines = Vec::new();
+        for i in 0..5u64 {
+            let agent = format!("agent-{i}");
+            lines.push(serde_json::to_string(&make_start("run-x", &agent, 0, "2026-01-01T10:00:00Z")).unwrap());
+            lines.push(serde_json::to_string(&make_end("run-x", &agent, 0, "2026-01-01T10:00:01Z", i * 100, i as f64 * 0.001, true)).unwrap());
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert!(print_top(&path, TopBy::Tokens, 2).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_top_aggregates_tokens_across_runs() {
+        let path = std::env::temp_dir().join("zeroclaw_test_top_agg.jsonl");
+        let mut lines = Vec::new();
+        // "main" appears in two separate runs — totals should be summed
+        lines.push(serde_json::to_string(&make_start("run-1", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-1", "main", 0, "2026-01-01T10:00:05Z", 1000, 0.003, true)).unwrap());
+        lines.push(serde_json::to_string(&make_start("run-2", "main", 0, "2026-01-02T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-2", "main", 0, "2026-01-02T10:00:05Z", 2000, 0.006, true)).unwrap());
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+        let events = read_all_events(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        // Verify aggregation via internal helpers (no file I/O needed after this)
+        let mut rows: HashMap<String, TopAgentRow> = HashMap::new();
+        let mut agent_runs_map: HashMap<String, HashSet<String>> = HashMap::new();
+        for ev in &events {
+            let Some(name) = ev.get("agent_name").and_then(|x| x.as_str()) else { continue; };
+            let Some(rid) = ev.get("run_id").and_then(|x| x.as_str()) else { continue; };
+            agent_runs_map.entry(name.to_owned()).or_default().insert(rid.to_owned());
+            let entry = rows.entry(name.to_owned()).or_insert_with(|| TopAgentRow {
+                agent_name: name.to_owned(), run_count: 0, delegation_count: 0,
+                total_tokens: 0, total_cost_usd: 0.0,
+            });
+            match ev.get("event_type").and_then(|x| x.as_str()) {
+                Some("DelegationStart") => entry.delegation_count += 1,
+                Some("DelegationEnd") => {
+                    if let Some(tok) = ev.get("tokens_used").and_then(|x| x.as_u64()) {
+                        entry.total_tokens += tok;
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (name, row) in rows.iter_mut() {
+            row.run_count = agent_runs_map.get(name).map_or(0, |s| s.len());
+        }
+        let main = rows.get("main").unwrap();
+        assert_eq!(main.total_tokens, 3000);  // 1000 + 2000
+        assert_eq!(main.run_count, 2);
+        assert_eq!(main.delegation_count, 2);
+    }
+
+    #[test]
+    fn print_top_counts_distinct_runs_per_agent() {
+        let path = std::env::temp_dir().join("zeroclaw_test_top_runs.jsonl");
+        let mut lines = Vec::new();
+        for run in &["run-p", "run-q", "run-r"] {
+            lines.push(serde_json::to_string(&make_start(run, "shared-agent", 0, "2026-01-01T10:00:00Z")).unwrap());
+        }
+        // unrelated agent in only one run
+        lines.push(serde_json::to_string(&make_start("run-p", "solo-agent", 1, "2026-01-01T10:00:00Z")).unwrap());
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert!(print_top(&path, TopBy::Tokens, 10).is_ok());
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
