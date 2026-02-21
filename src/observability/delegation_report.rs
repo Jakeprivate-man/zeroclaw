@@ -8,6 +8,7 @@
 //! - [`print_export`]: stream delegation events as JSONL or CSV.
 //! - [`print_diff`]: side-by-side comparison of two runs with token/cost deltas.
 //! - [`print_top`]: global agent leaderboard ranked by tokens or cost.
+//! - [`print_prune`]: remove old runs from the log, keeping the N most recent.
 //! - [`get_log_summary`]: programmatic aggregate for `zeroclaw status`.
 //!
 //! All parsing is done via `serde_json::Value` — no new dependencies.
@@ -637,6 +638,83 @@ pub fn print_top(log_path: &Path, by: TopBy, limit: usize) -> Result<()> {
     println!("Showing top {shown} of {total} agent(s).");
     println!();
     println!("Use `--by cost` to rank by total cost instead of tokens.");
+    Ok(())
+}
+
+/// Remove old runs from the delegation log, keeping the N most recent.
+///
+/// Reads all stored runs, sorts them newest-first (by earliest event timestamp),
+/// retains only the `keep` most recent, and atomically rewrites the log file
+/// with the surviving events. The write is atomic: events are written to a
+/// `.tmp` sibling and then renamed over the original, so a crash mid-write
+/// leaves the original file intact.
+///
+/// When `keep` is zero **all** runs are removed and the log is left empty.
+/// When the number of stored runs is already ≤ `keep`, nothing is written.
+///
+/// Returns `Ok` when the log file is absent, empty, or has nothing to prune.
+pub fn print_prune(log_path: &Path, keep: usize) -> Result<()> {
+    if !log_path.exists() {
+        println!("No delegation log found at: {}", log_path.display());
+        println!("Nothing to prune.");
+        return Ok(());
+    }
+
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("Log is empty — nothing to prune.");
+        return Ok(());
+    }
+
+    let runs = collect_runs(&all_events);
+    let total_runs = runs.len();
+
+    if total_runs <= keep {
+        println!(
+            "Nothing to prune: {} run(s) stored, --keep {}.",
+            total_runs, keep
+        );
+        return Ok(());
+    }
+
+    // Runs are newest-first; keep the first `keep`, prune the rest.
+    let prune_ids: HashSet<&str> = runs[keep..].iter().map(|r| r.run_id.as_str()).collect();
+    let pruned_run_count = prune_ids.len();
+
+    let kept_events: Vec<&Value> = all_events
+        .iter()
+        .filter(|e| {
+            e.get("run_id")
+                .and_then(|x| x.as_str())
+                .map_or(true, |rid| !prune_ids.contains(rid))
+        })
+        .collect();
+
+    let removed_event_count = all_events.len() - kept_events.len();
+
+    // Atomic write: serialize to a temp file, then rename over the original.
+    let tmp_path = {
+        let mut s = log_path.as_os_str().to_owned();
+        s.push(".tmp");
+        std::path::PathBuf::from(s)
+    };
+    {
+        let mut content = String::new();
+        for ev in &kept_events {
+            content.push_str(&serde_json::to_string(ev)?);
+            content.push('\n');
+        }
+        std::fs::write(&tmp_path, content)?;
+    }
+    std::fs::rename(&tmp_path, log_path)?;
+
+    println!(
+        "Pruned {} run(s) ({} event(s) removed). {} run(s) / {} event(s) remaining.",
+        pruned_run_count,
+        removed_event_count,
+        keep,
+        kept_events.len(),
+    );
     Ok(())
 }
 
@@ -1506,5 +1584,93 @@ mod tests {
         let result = print_diff(&path, "run-nonexistent", None);
         let _ = std::fs::remove_file(&path);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn print_prune_on_missing_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_prune_missing.jsonl");
+        let _ = std::fs::remove_file(&path);
+        assert!(print_prune(&path, 10).is_ok());
+    }
+
+    #[test]
+    fn print_prune_fewer_runs_than_keep_is_noop() {
+        let path = std::env::temp_dir().join("zeroclaw_test_prune_noop.jsonl");
+        let line = serde_json::to_string(
+            &make_start("run-only", "main", 0, "2026-01-01T10:00:00Z"),
+        )
+        .unwrap();
+        std::fs::write(&path, line + "\n").unwrap();
+        // 1 run stored, --keep 5 → nothing to prune
+        assert!(print_prune(&path, 5).is_ok());
+        let content = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(content.contains("run-only"), "sole run should be intact after noop");
+    }
+
+    #[test]
+    fn print_prune_removes_oldest_runs() {
+        let path = std::env::temp_dir().join("zeroclaw_test_prune_removes.jsonl");
+        let mut lines = Vec::new();
+        lines.push(serde_json::to_string(&make_start("run-old", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_start("run-mid", "main", 0, "2026-01-02T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_start("run-new", "main", 0, "2026-01-03T10:00:00Z")).unwrap());
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        // Keep 2 most recent → run-old should be pruned
+        assert!(print_prune(&path, 2).is_ok());
+        let content = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(!content.contains("run-old"), "run-old should have been pruned");
+        assert!(content.contains("run-mid"), "run-mid should be retained");
+        assert!(content.contains("run-new"), "run-new should be retained");
+    }
+
+    #[test]
+    fn print_prune_keep_zero_empties_log() {
+        let path = std::env::temp_dir().join("zeroclaw_test_prune_zero.jsonl");
+        let mut lines = Vec::new();
+        lines.push(serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_start("run-b", "main", 0, "2026-01-02T10:00:00Z")).unwrap());
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        // keep=0 → all runs pruned
+        assert!(print_prune(&path, 0).is_ok());
+        let content = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(content.trim().is_empty(), "log should be empty after keep=0");
+    }
+
+    #[test]
+    fn print_prune_preserves_all_events_for_kept_runs() {
+        let path = std::env::temp_dir().join("zeroclaw_test_prune_keeps.jsonl");
+        let mut lines = Vec::new();
+        // run-old has 2 events; run-new has 2 events. Keep 1 → run-old removed.
+        lines.push(serde_json::to_string(&make_start("run-old", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-old", "main", 0, "2026-01-01T10:00:05Z", 100, 0.001, true)).unwrap());
+        lines.push(serde_json::to_string(&make_start("run-new", "main", 0, "2026-01-02T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-new", "main", 0, "2026-01-02T10:00:05Z", 200, 0.002, true)).unwrap());
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert!(print_prune(&path, 1).is_ok());
+        let remaining = read_all_events(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        // Only the 2 run-new events should remain
+        assert_eq!(remaining.len(), 2, "exactly 2 events for kept run should remain");
+        assert!(
+            remaining.iter().all(|e| e.get("run_id").and_then(|x| x.as_str()) == Some("run-new")),
+            "all remaining events must belong to run-new"
+        );
+    }
+
+    #[test]
+    fn print_prune_exact_keep_equals_run_count_is_noop() {
+        let path = std::env::temp_dir().join("zeroclaw_test_prune_exact.jsonl");
+        let mut lines = Vec::new();
+        lines.push(serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_start("run-b", "main", 0, "2026-01-02T10:00:00Z")).unwrap());
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        // Exactly 2 runs, keep=2 → noop, file unchanged
+        assert!(print_prune(&path, 2).is_ok());
+        let remaining = read_all_events(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(remaining.len(), 2, "both events should remain when keep equals run count");
     }
 }
