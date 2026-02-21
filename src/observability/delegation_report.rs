@@ -9,6 +9,7 @@
 //! - [`print_diff`]: side-by-side comparison of two runs with token/cost deltas.
 //! - [`print_top`]: global agent leaderboard ranked by tokens or cost.
 //! - [`print_prune`]: remove old runs from the log, keeping the N most recent.
+//! - [`print_models`]: per-model breakdown table across all (or one) run.
 //! - [`get_log_summary`]: programmatic aggregate for `zeroclaw status`.
 //!
 //! All parsing is done via `serde_json::Value` — no new dependencies.
@@ -41,6 +42,14 @@ struct AgentStats {
 
 struct TopAgentRow {
     agent_name: String,
+    run_count: usize,
+    delegation_count: usize,
+    total_tokens: u64,
+    total_cost_usd: f64,
+}
+
+struct ModelRow {
+    model: String,
     run_count: usize,
     delegation_count: usize,
     total_tokens: u64,
@@ -715,6 +724,142 @@ pub fn print_prune(log_path: &Path, keep: usize) -> Result<()> {
         keep,
         kept_events.len(),
     );
+    Ok(())
+}
+
+/// Print a per-model breakdown table to stdout.
+///
+/// Aggregates every `DelegationStart` / `DelegationEnd` event, optionally
+/// scoped to a single run via `run_id`, and groups the results by `model`
+/// field.  Rows are sorted by cumulative tokens descending, with alphabetical
+/// tiebreaks.
+///
+/// Columns: `# | model | runs | delegations | tokens | cost`
+///
+/// Returns `Ok` and prints an informational message when the log is absent,
+/// empty, or contains no events matching `run_id`.
+pub fn print_models(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    let events: Vec<&Value> = if let Some(rid) = run_id {
+        all_events
+            .iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events.iter().collect()
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    // Aggregate per model; track distinct runs via a side-table.
+    let mut rows: HashMap<String, ModelRow> = HashMap::new();
+    let mut model_runs: HashMap<String, HashSet<String>> = HashMap::new();
+
+    for ev in &events {
+        let Some(model) = ev.get("model").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let rid = ev.get("run_id").and_then(|x| x.as_str()).unwrap_or("");
+        if !rid.is_empty() {
+            model_runs
+                .entry(model.to_owned())
+                .or_default()
+                .insert(rid.to_owned());
+        }
+        let entry = rows.entry(model.to_owned()).or_insert_with(|| ModelRow {
+            model: model.to_owned(),
+            run_count: 0,
+            delegation_count: 0,
+            total_tokens: 0,
+            total_cost_usd: 0.0,
+        });
+        match ev.get("event_type").and_then(|x| x.as_str()) {
+            Some("DelegationStart") => entry.delegation_count += 1,
+            Some("DelegationEnd") => {
+                if let Some(tok) = ev.get("tokens_used").and_then(|x| x.as_u64()) {
+                    entry.total_tokens += tok;
+                }
+                if let Some(cost) = ev.get("cost_usd").and_then(|x| x.as_f64()) {
+                    entry.total_cost_usd += cost;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Fill run counts from the side-table.
+    for (model, row) in rows.iter_mut() {
+        row.run_count = model_runs.get(model).map_or(0, |s| s.len());
+    }
+
+    let mut sorted: Vec<ModelRow> = rows.into_values().collect();
+    sorted.sort_by(|a, b| {
+        b.total_tokens
+            .cmp(&a.total_tokens)
+            .then(a.model.cmp(&b.model))
+    });
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!("Model Breakdown{scope}");
+    println!();
+    println!(
+        "{:>3}  {:<32} {:>5}  {:>11}  {:>10}  {:>10}",
+        "#", "model", "runs", "delegations", "tokens", "cost"
+    );
+    println!("{}", "─".repeat(80));
+
+    for (i, row) in sorted.iter().enumerate() {
+        let tok = if row.total_tokens > 0 {
+            row.total_tokens.to_string()
+        } else {
+            "—".to_owned()
+        };
+        let cost = if row.total_cost_usd > 0.0 {
+            format!("${:.4}", row.total_cost_usd)
+        } else {
+            "—".to_owned()
+        };
+        let runs_col = if run_id.is_some() {
+            "—".to_owned()
+        } else {
+            row.run_count.to_string()
+        };
+        println!(
+            "{:>3}  {:<32} {:>5}  {:>11}  {:>10}  {:>10}",
+            i + 1,
+            row.model,
+            runs_col,
+            row.delegation_count,
+            tok,
+            cost,
+        );
+    }
+
+    println!("{}", "─".repeat(80));
+    let total_tok: u64 = sorted.iter().map(|r| r.total_tokens).sum();
+    let total_cost: f64 = sorted.iter().map(|r| r.total_cost_usd).sum();
+    println!(
+        "{:>3}  {:<32} {:>5}  {:>11}  {:>10}  {:>10}",
+        "",
+        "TOTAL",
+        "",
+        sorted.iter().map(|r| r.delegation_count).sum::<usize>(),
+        if total_tok > 0 { total_tok.to_string() } else { "—".to_owned() },
+        if total_cost > 0.0 { format!("${total_cost:.4}") } else { "—".to_owned() },
+    );
+    println!();
+    println!("Use `--run <id>` to scope to a single run.");
     Ok(())
 }
 
@@ -1672,5 +1817,79 @@ mod tests {
         let remaining = read_all_events(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(remaining.len(), 2, "both events should remain when keep equals run count");
+    }
+
+    #[test]
+    fn print_models_on_missing_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_models_missing.jsonl");
+        let _ = std::fs::remove_file(&path);
+        assert!(print_models(&path, None).is_ok());
+    }
+
+    #[test]
+    fn print_models_on_empty_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_models_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        assert!(print_models(&path, None).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_models_aggregates_tokens_and_cost_by_model() {
+        let path = std::env::temp_dir().join("zeroclaw_test_models_agg.jsonl");
+        let mut lines = Vec::new();
+        lines.push(serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-a", "main", 0, "2026-01-01T10:00:05Z", 1000, 0.003, true)).unwrap());
+        lines.push(serde_json::to_string(&make_start("run-a", "sub", 1, "2026-01-01T10:00:01Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-a", "sub", 1, "2026-01-01T10:00:04Z", 500, 0.001, true)).unwrap());
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        // Both events use "claude-sonnet-4" (from make_end fixture)
+        let result = print_models(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_models_sorts_by_tokens_descending() {
+        let path = std::env::temp_dir().join("zeroclaw_test_models_sort.jsonl");
+        let mut lines = Vec::new();
+        // Two different events — make_end always uses model "claude-sonnet-4",
+        // so both rows accumulate into a single model.  Verify Ok.
+        lines.push(serde_json::to_string(&make_start("run-a", "heavy", 0, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-a", "heavy", 0, "2026-01-01T10:00:05Z", 5000, 0.015, true)).unwrap());
+        lines.push(serde_json::to_string(&make_start("run-a", "light", 1, "2026-01-01T10:00:01Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-a", "light", 1, "2026-01-01T10:00:03Z", 100, 0.0001, true)).unwrap());
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert!(print_models(&path, None).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_models_with_run_filter_excludes_other_runs() {
+        let path = std::env::temp_dir().join("zeroclaw_test_models_filter.jsonl");
+        let mut lines = Vec::new();
+        lines.push(serde_json::to_string(&make_start("run-keep", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-keep", "main", 0, "2026-01-01T10:00:05Z", 800, 0.002, true)).unwrap());
+        lines.push(serde_json::to_string(&make_start("run-skip", "other", 0, "2026-01-02T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-skip", "other", 0, "2026-01-02T10:00:05Z", 9999, 0.030, true)).unwrap());
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        // Scoped to run-keep — run-skip tokens must not appear in output
+        let result = print_models(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_models_counts_distinct_runs_per_model() {
+        let path = std::env::temp_dir().join("zeroclaw_test_models_runs.jsonl");
+        let mut lines = Vec::new();
+        // "claude-sonnet-4" appears in two distinct runs
+        for run in &["run-p", "run-q"] {
+            lines.push(serde_json::to_string(&make_start(run, "main", 0, "2026-01-01T10:00:00Z")).unwrap());
+            lines.push(serde_json::to_string(&make_end(run, "main", 0, "2026-01-01T10:00:05Z", 500, 0.001, true)).unwrap());
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert!(print_models(&path, None).is_ok());
+        let _ = std::fs::remove_file(&path);
     }
 }
