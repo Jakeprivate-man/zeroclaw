@@ -7,6 +7,7 @@ Errors, Usage). Uses Matrix Green theme throughout.
 
 import streamlit as st
 from components import analytics
+from components.analytics import delegation_charts
 from components.dashboard import delegation_tree
 from lib.session_state import get_state, set_state
 
@@ -144,54 +145,70 @@ def render() -> None:
         with col2:
             analytics.feature_usage_chart()
 
-    # Delegations Tab: Agent delegation tree visualization
+    # Delegations Tab: Agent delegation tree visualization + cross-run analytics
     with tab5:
         st.markdown("### Agent Delegations")
-        st.caption("Visualize nested agent delegation hierarchies and execution status")
+        st.caption("Visualize nested agent delegation hierarchies and cross-run cost/token analytics")
 
         # Delegation summary metrics
         delegation_tree.render_delegation_summary()
 
         st.divider()
 
-        # Delegation tree visualization (now using real data from JSONL)
+        # Cross-run analytics charts
+        st.markdown("#### Cross-Run Analytics")
+        chart_col1, chart_col2 = st.columns(2)
+        with chart_col1:
+            delegation_charts.render_cost_by_run()
+        with chart_col2:
+            delegation_charts.render_tokens_by_model()
+
+        chart_col3, chart_col4 = st.columns(2)
+        with chart_col3:
+            delegation_charts.render_depth_distribution()
+        with chart_col4:
+            delegation_charts.render_success_rate_by_depth()
+
+        st.divider()
+
+        # Delegation tree visualization (real data from JSONL)
         delegation_tree.render_delegation_tree(use_mock_data=False)
 
         # Instructions for delegation tracking
         with st.expander("ℹ️ About Delegation Tracking"):
             st.markdown("""
-            **✅ Phase 1 Delegation Visibility: COMPLETE**
-
-            The delegation tracking system is now fully operational. This page displays
-            real delegation events from the ZeroClaw backend in real-time.
+            The delegation tracking system records nested agent delegations end-to-end,
+            from the Rust backend through to this UI.
 
             **How it works:**
 
-            1. **Backend Integration** - `DelegationEventObserver` writes events to JSONL
-            2. **Event Forwarding** - `ForwardingObserver` ensures child agent events are visible
-            3. **Event Storage** - All delegation events stored in `~/.zeroclaw/state/delegation.jsonl`
-            4. **UI Parsing** - This page reads and builds the delegation tree automatically
+            1. **Backend** — `DelegationEventObserver` generates a UUID `run_id` at startup
+               and writes `DelegationStart` / `DelegationEnd` events to JSONL
+            2. **Token capture** — `CapturingObserver` intercepts `AgentEnd` events from
+               each sub-agent and propagates `tokens_used` / `cost_usd` into `DelegationEnd`
+            3. **Storage** — append-only at `~/.zeroclaw/state/delegation.jsonl`
+            4. **UI** — this page reads the JSONL, filters by run, and builds the tree
 
             **What you see:**
 
-            - **Run Selector** - Filter to show delegations from a specific process run
-            - **Delegation Tree** - Hierarchical view of agent → sub-agent relationships
-            - **Status Indicators** - 🟡 Running, ✅ Success, ❌ Failed
-            - **Metrics** - Duration, depth, provider/model, run ID for each delegation
-            - **Real-time Updates** - Page refreshes to show latest delegations
+            - **Cross-run charts** — cost per run, token breakdown by model, depth
+              distribution, and success/failure rates across all historical runs
+            - **Run Selector** — filter the tree to a single process invocation
+            - **Delegation Tree** — hierarchical agent → sub-agent view with status,
+              duration, tokens, and cost per node
+            - **Prometheus metrics** — `zeroclaw_delegations_total`,
+              `zeroclaw_delegation_duration_seconds`,
+              `zeroclaw_delegation_tokens_total`,
+              `zeroclaw_delegation_cost_usd_total`
 
-            **If you see "No delegation data found":**
-
-            This means no delegations have occurred yet. Trigger a delegation by:
-            - Using the `delegate` tool in your agent configuration
-            - Running an agent workflow that includes sub-agent delegation
-            - Starting the ZeroClaw backend and executing tasks that delegate work
-
-            **Event Format (JSONL) — Phase 2 with run_id:**
+            **Event format (JSONL):**
             ```json
-            {"event_type":"DelegationStart","run_id":"f47ac10b-58cc-4372-a567-0e02b2c3d479","agent_name":"research","provider":"anthropic","model":"claude-sonnet-4","depth":1,"agentic":true,"timestamp":"2026-02-21T10:30:45Z"}
-            {"event_type":"DelegationEnd","run_id":"f47ac10b-58cc-4372-a567-0e02b2c3d479","agent_name":"research","provider":"anthropic","model":"claude-sonnet-4","depth":1,"duration_ms":4512,"success":true,"error_message":null,"timestamp":"2026-02-21T10:30:50Z"}
+            {"event_type":"DelegationStart","run_id":"f47ac10b-...","agent_name":"research","provider":"anthropic","model":"claude-sonnet-4","depth":1,"agentic":true,"timestamp":"2026-02-22T10:30:45Z"}
+            {"event_type":"DelegationEnd","run_id":"f47ac10b-...","agent_name":"research","provider":"anthropic","model":"claude-sonnet-4","depth":1,"duration_ms":4512,"success":true,"error_message":null,"tokens_used":1234,"cost_usd":0.0037,"timestamp":"2026-02-22T10:30:50Z"}
             ```
+
+            **If no delegation data appears:** run ZeroClaw with a workflow that uses
+            the `delegate` tool to trigger sub-agent delegations.
             """)
 
 
