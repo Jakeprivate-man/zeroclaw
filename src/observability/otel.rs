@@ -1,5 +1,5 @@
 use super::traits::{Observer, ObserverEvent, ObserverMetric};
-use opentelemetry::metrics::{Counter, Gauge, Histogram};
+use opentelemetry::metrics::{Counter, Gauge, Histogram, UpDownCounter};
 use opentelemetry::trace::{Span, SpanKind, Status, Tracer};
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
@@ -27,6 +27,7 @@ pub struct OtelObserver {
     tokens_used: Counter<u64>,
     active_sessions: Gauge<u64>,
     queue_depth: Gauge<u64>,
+    active_delegations: UpDownCounter<i64>,
 }
 
 impl OtelObserver {
@@ -150,6 +151,11 @@ impl OtelObserver {
             .with_description("Current message queue depth")
             .build();
 
+        let active_delegations = meter
+            .i64_up_down_counter("zeroclaw.delegation.active")
+            .with_description("Number of in-flight agent delegations")
+            .build();
+
         Ok(Self {
             tracer_provider,
             meter_provider: meter_provider_clone,
@@ -166,6 +172,7 @@ impl OtelObserver {
             tokens_used,
             active_sessions,
             queue_depth,
+            active_delegations,
         })
     }
 }
@@ -338,16 +345,14 @@ impl Observer for OtelObserver {
                 depth,
                 agentic,
             } => {
-                // Record delegation start with relevant context
-                // No need to create a span here; span will be created on DelegationEnd
-                let _attrs = [
+                let attrs = [
                     KeyValue::new("agent_name", agent_name.clone()),
                     KeyValue::new("provider", provider.clone()),
                     KeyValue::new("model", model.clone()),
                     KeyValue::new("depth", *depth as i64),
                     KeyValue::new("agentic", *agentic),
                 ];
-                // Could increment a delegation counter here if needed
+                self.active_delegations.add(1, &attrs);
             }
             ObserverEvent::DelegationEnd {
                 agent_name,
@@ -356,7 +361,7 @@ impl Observer for OtelObserver {
                 depth,
                 duration,
                 success,
-                error_message: _,
+                error_message,
                 tokens_used,
                 cost_usd,
             } => {
@@ -368,10 +373,15 @@ impl Observer for OtelObserver {
                 let status = if *success {
                     Status::Ok
                 } else {
-                    Status::error("")
+                    Status::error(
+                        error_message
+                            .as_deref()
+                            .unwrap_or("delegation failed")
+                            .to_owned(),
+                    )
                 };
 
-                let mut attrs = vec![
+                let mut span_attrs = vec![
                     KeyValue::new("agent_name", agent_name.clone()),
                     KeyValue::new("provider", provider.clone()),
                     KeyValue::new("model", model.clone()),
@@ -379,21 +389,37 @@ impl Observer for OtelObserver {
                     KeyValue::new("success", *success),
                     KeyValue::new("duration_s", secs),
                 ];
+                if let Some(msg) = error_message {
+                    span_attrs.push(KeyValue::new("error.message", msg.clone()));
+                }
                 if let Some(t) = tokens_used {
-                    attrs.push(KeyValue::new("tokens_used", *t as i64));
+                    span_attrs.push(KeyValue::new("tokens_used", *t as i64));
                 }
                 if let Some(c) = cost_usd {
-                    attrs.push(KeyValue::new("cost_usd", *c));
+                    span_attrs.push(KeyValue::new("cost_usd", *c));
                 }
 
+                let span_name = format!("delegation/{agent_name}");
                 let mut span = tracer.build(
-                    opentelemetry::trace::SpanBuilder::from_name("delegation")
+                    opentelemetry::trace::SpanBuilder::from_name(span_name)
                         .with_kind(SpanKind::Internal)
                         .with_start_time(start_time)
-                        .with_attributes(attrs),
+                        .with_attributes(span_attrs),
                 );
                 span.set_status(status);
                 span.end();
+
+                // Decrement in-flight counter — mirror the labels used in DelegationStart
+                self.active_delegations.add(
+                    -1,
+                    &[
+                        KeyValue::new("agent_name", agent_name.clone()),
+                        KeyValue::new("provider", provider.clone()),
+                        KeyValue::new("model", model.clone()),
+                        KeyValue::new("depth", *depth as i64),
+                        KeyValue::new("agentic", false),
+                    ],
+                );
             }
         }
     }
@@ -582,5 +608,90 @@ mod tests {
             result.is_ok(),
             "observer creation must succeed even with unreachable endpoint"
         );
+    }
+
+    // ── §8.7 Phase-7 delegation span quality tests ────────────────────────
+
+    #[test]
+    fn delegation_start_increments_active_counter_without_panic() {
+        let obs = test_observer();
+        obs.record_event(&ObserverEvent::DelegationStart {
+            agent_name: "research".into(),
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4-6".into(),
+            depth: 1,
+            agentic: true,
+        });
+    }
+
+    #[test]
+    fn delegation_end_span_named_with_agent_name_without_panic() {
+        let obs = test_observer();
+        obs.record_event(&ObserverEvent::DelegationEnd {
+            agent_name: "research".into(),
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4-6".into(),
+            depth: 1,
+            duration: Duration::from_millis(1200),
+            success: true,
+            error_message: None,
+            tokens_used: Some(500),
+            cost_usd: Some(0.0015),
+        });
+    }
+
+    #[test]
+    fn delegation_end_with_error_message_records_without_panic() {
+        let obs = test_observer();
+        obs.record_event(&ObserverEvent::DelegationEnd {
+            agent_name: "analyzer".into(),
+            provider: "anthropic".into(),
+            model: "claude-haiku-4-5-20251001".into(),
+            depth: 2,
+            duration: Duration::from_millis(50),
+            success: false,
+            error_message: Some("context window exceeded".into()),
+            tokens_used: None,
+            cost_usd: None,
+        });
+    }
+
+    #[test]
+    fn delegation_end_failed_with_no_error_message_records_without_panic() {
+        let obs = test_observer();
+        obs.record_event(&ObserverEvent::DelegationEnd {
+            agent_name: "analyzer".into(),
+            provider: "anthropic".into(),
+            model: "claude-haiku-4-5-20251001".into(),
+            depth: 2,
+            duration: Duration::from_millis(50),
+            success: false,
+            error_message: None,
+            tokens_used: None,
+            cost_usd: None,
+        });
+    }
+
+    #[test]
+    fn delegation_start_end_roundtrip_does_not_panic() {
+        let obs = test_observer();
+        obs.record_event(&ObserverEvent::DelegationStart {
+            agent_name: "coder".into(),
+            provider: "openrouter".into(),
+            model: "claude-sonnet-4-6".into(),
+            depth: 0,
+            agentic: true,
+        });
+        obs.record_event(&ObserverEvent::DelegationEnd {
+            agent_name: "coder".into(),
+            provider: "openrouter".into(),
+            model: "claude-sonnet-4-6".into(),
+            depth: 0,
+            duration: Duration::from_secs(3),
+            success: true,
+            error_message: None,
+            tokens_used: Some(2000),
+            cost_usd: Some(0.006),
+        });
     }
 }
