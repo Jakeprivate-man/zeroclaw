@@ -174,9 +174,10 @@ def render() -> None:
 
             **What you see:**
 
+            - **Run Selector** - Filter to show delegations from a specific process run
             - **Delegation Tree** - Hierarchical view of agent → sub-agent relationships
             - **Status Indicators** - 🟡 Running, ✅ Success, ❌ Failed
-            - **Metrics** - Duration, depth, provider/model for each delegation
+            - **Metrics** - Duration, depth, provider/model, run ID for each delegation
             - **Real-time Updates** - Page refreshes to show latest delegations
 
             **If you see "No delegation data found":**
@@ -186,10 +187,10 @@ def render() -> None:
             - Running an agent workflow that includes sub-agent delegation
             - Starting the ZeroClaw backend and executing tasks that delegate work
 
-            **Event Format (JSONL):**
+            **Event Format (JSONL) — Phase 2 with run_id:**
             ```json
-            {"event_type":"DelegationStart","agent_name":"research","provider":"anthropic","model":"claude-sonnet-4","depth":1,"agentic":true,"timestamp":"2026-02-21T10:30:45Z"}
-            {"event_type":"DelegationEnd","agent_name":"research","provider":"anthropic","model":"claude-sonnet-4","depth":1,"duration_ms":4512,"success":true,"error_message":null,"timestamp":"2026-02-21T10:30:50Z"}
+            {"event_type":"DelegationStart","run_id":"f47ac10b-58cc-4372-a567-0e02b2c3d479","agent_name":"research","provider":"anthropic","model":"claude-sonnet-4","depth":1,"agentic":true,"timestamp":"2026-02-21T10:30:45Z"}
+            {"event_type":"DelegationEnd","run_id":"f47ac10b-58cc-4372-a567-0e02b2c3d479","agent_name":"research","provider":"anthropic","model":"claude-sonnet-4","depth":1,"duration_ms":4512,"success":true,"error_message":null,"timestamp":"2026-02-21T10:30:50Z"}
             ```
             """)
 
