@@ -303,7 +303,13 @@ def render_timeline(run_id: Optional[str] = None) -> None:
         paper_bgcolor=_BG,
         plot_bgcolor=_BG,
         font=dict(color=_GREEN_PRIMARY),
-        title="Delegation Timeline (most recent run)" if effective_run_id else "Delegation Timeline",
+        title=(
+            f"Delegation Timeline [{run_id[:8]}…]"
+            if run_id is not None
+            else "Delegation Timeline (most recent run)"
+            if effective_run_id
+            else "Delegation Timeline"
+        ),
         margin=dict(l=160, r=20, t=40, b=40),
         height=chart_height,
         xaxis=dict(
@@ -395,3 +401,44 @@ def render_log_health() -> None:
                 f"Newest run: {newest_ts}  \u2022  "
                 f"Avg cost/run: {avg_str}"
             )
+
+
+def render_run_selector() -> Optional[str]:
+    """Shared run selector — returns the chosen run_id or None for 'All runs'.
+
+    Renders a compact selectbox that defaults to the most recent run.
+    When placed above other delegation components, the returned run_id
+    can be threaded through to ``render_timeline``, ``render_delegation_summary``,
+    and ``render_delegation_tree`` so all views stay in sync.
+
+    Returns:
+        The selected run_id string, or None when 'All runs' is chosen
+        or when the log is empty.
+    """
+    parser = DelegationParser()
+    runs = parser.list_runs()
+    if not runs:
+        return None
+
+    labels = [r.label for r in runs]
+    options = ["All runs"] + labels
+
+    selected = st.selectbox(
+        "Filter by run",
+        options=options,
+        index=1 if len(options) > 1 else 0,  # default: most recent run
+        key="delegation_shared_run_selector",
+        help=(
+            "Sync the timeline, summary, and delegation tree to a single "
+            "process invocation. 'All runs' shows aggregate cross-run stats "
+            "in the summary; the timeline defaults to the most recent run."
+        ),
+    )
+
+    if selected == "All runs":
+        return None
+
+    for run in runs:
+        if run.label == selected:
+            return run.run_id
+    return None
