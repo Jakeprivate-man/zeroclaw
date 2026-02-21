@@ -396,7 +396,9 @@ Examples:
   zeroclaw delegations stats         # per-agent stats (all runs)
   zeroclaw delegations stats --run <id>  # per-agent stats for one run
   zeroclaw delegations export        # stream all events as JSONL
-  zeroclaw delegations export --format csv --run <id>  # CSV for one run")]
+  zeroclaw delegations export --format csv --run <id>  # CSV for one run
+  zeroclaw delegations diff <run_a>  # compare run_a vs most recent other run
+  zeroclaw delegations diff <run_a> <run_b>  # compare two specific runs")]
     Delegations {
         #[command(subcommand)]
         delegation_command: Option<DelegationCommands>,
@@ -443,6 +445,24 @@ enum DelegationCommands {
         /// Output format: jsonl (one event per line) or csv (DelegationEnd rows only)
         #[arg(long, value_enum, default_value = "jsonl")]
         format: DelegationExportFormat,
+    },
+    /// Compare per-agent stats between two runs side by side
+    #[command(long_about = "\
+Compare per-agent delegation statistics between two runs side-by-side.
+
+Run IDs may be given as a full UUID or any unique prefix.  When <run_b>
+is omitted the most recent stored run that is not <run_a> is used.
+
+Output columns: agent | del_A | del_B | tok_A | tok_B | Δtok | cost_A | cost_B | Δcost
+
+Examples:
+  zeroclaw delegations diff f47ac10b          # vs most recent other run
+  zeroclaw delegations diff f47ac10b bbb1bbb2 # explicit pair")]
+    Diff {
+        /// First run ID or unique prefix (the baseline)
+        run_a: String,
+        /// Second run ID or unique prefix (default: most recent other run)
+        run_b: Option<String>,
     },
 }
 
@@ -1070,6 +1090,13 @@ async fn main() -> Result<()> {
                         }
                     };
                     observability::delegation_report::print_export(&log_path, run.as_deref(), fmt)
+                }
+                Some(DelegationCommands::Diff { run_a, run_b }) => {
+                    observability::delegation_report::print_diff(
+                        &log_path,
+                        &run_a,
+                        run_b.as_deref(),
+                    )
                 }
             }
         }
