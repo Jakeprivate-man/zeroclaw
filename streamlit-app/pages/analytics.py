@@ -219,6 +219,9 @@ def render() -> None:
         with agent_col2:
             delegation_charts.render_cost_by_agent(run_id=selected_run_id)
 
+        # Per-agent stats table (scoped to selected run when set)
+        delegation_charts.render_agent_stats_table(run_id=selected_run_id)
+
         # Timeline waterfall (scoped to selected run)
         delegation_charts.render_timeline(run_id=selected_run_id)
 
@@ -266,6 +269,10 @@ def render() -> None:
             - **Agent Breakdown** — tokens and cost per agent name, scoped to the
               selected run when a specific run is chosen in the shared run selector;
               shows aggregate across all runs when "All runs" is selected
+            - **Agent Stats table** — sortable dataframe with one row per agent:
+              delegation count, ended count, success %, average duration, total tokens,
+              and total cost; mirrors `zeroclaw delegations stats`; scoped by the
+              shared run selector
             - **Log Health** — collapsible panel showing file size, run count,
               time range, and cumulative token/cost totals across all stored runs;
               useful for verifying the rotation limit (max 100 runs by default)
