@@ -1,0 +1,148 @@
+AGENT 05 INVESTIGATION SUMMARY
+=================================
+
+MISSION COMPLETED: Cost Tracking Architecture Analysis
+Date: 2026-02-21
+Status: COMPLETE - Comprehensive Report Generated
+
+DELIVERABLE LOCATION:
+  /Users/jakeprivate/zeroclaw/AGENT_05_COSTS_REPORT.md (1015 lines, 34 KB)
+
+KEY FINDINGS:
+=============
+
+1. COSTS.JSONL SCHEMA
+   - 50 records spanning Jan 21 - Feb 21, 2026
+   - 8 fields: id, session_id, model, input_tokens, output_tokens, total_tokens, cost_usd, timestamp
+   - All fields required (no nullables)
+   - 6-decimal precision at write, 4-decimal in aggregations
+   - UTC timestamps with microsecond precision
+   - Total cost: $1.80 USD across dataset
+
+2. AGGREGATION ARCHITECTURE
+   - Runtime model: No persistent state, compute on-demand
+   - Session-level: Groups by session_id (can span 31+ days)
+   - Daily aggregation: UTC midnight boundary (CRITICAL: hardcoded, not timezone-aware)
+   - Monthly aggregation: Calendar month boundary (UTC, day=1 at 00:00:00)
+   - By-model breakdown: Tracked per-dimension
+   - Performance: <1ms for 50 records, scales to ~100ms for 5,000 records
+
+3. COST REPORTING
+   - 5 report formats available: Summary, Budget Status, Budget Summary, Recent Costs, Token History
+   - Real-time on page load (no caching between refreshes)
+   - Pull-based reporting (no push/webhook alerts)
+   - Config-driven: ~/.zeroclaw/config.toml with daily/monthly limits
+   - 3-column dashboard: Session | Daily | Monthly costs with budget percentages
+   - Donut chart breakdown by model
+
+4. HISTORICAL ANALYSIS CAPABILITIES
+   - Current: VERY LIMITED
+   - Can retrieve: Last N hours, by-model breakdown, session aggregates
+   - Cannot: Trend detection, forecasting, anomaly alerts, cohort comparison, retention policies
+   - Time-series: Derivable but requires manual post-processing
+
+5. CRITICAL GAPS & RECOMMENDATIONS
+
+   IMMEDIATE PRIORITY (High Impact, Medium Effort):
+   ✗ Timezone-aware aggregation
+     Issue: Daily boundaries computed in UTC, not local timezone
+     Impact: Incorrect daily reports in non-UTC zones
+     Fix: Add timezone parameter to aggregation methods
+   
+   ✗ Retention policy
+     Issue: No file rotation, backup, or archival mechanism
+     Impact: Data loss risk, no audit trail
+     Fix: Monthly file rotation + archival (rotate costs.jsonl -> costs-2026-02.jsonl)
+   
+   MEDIUM PRIORITY (Medium Impact, Medium Effort):
+   ✗ Basic trend analysis
+   ✗ Historical period comparison
+   ✗ Cost breakdown by time dimension
+   ✗ Advanced filtering
+   
+   LONG-TERM (High Effort):
+   ✗ Forecasting / budget projections
+   ✗ Alerting system (webhook, email, Slack)
+   ✗ Data export (CSV, JSON)
+   ✗ SQL-like query interface
+
+REAL DATA STATISTICS:
+======================
+- Session 1 (b9b607f9...): 14 requests, $0.318845, Jan 21 - Feb 20
+- Session 2 (ec1a8033...): 27 requests, $0.954832, Jan 22 - Feb 21
+- Session 3 (ae6b5bf6...):  9 requests, $0.525393, Feb 6 - Feb 19
+
+Model Distribution (by request count):
+  anthropic/claude-sonnet-4:        58% of requests
+  anthropic/claude-3.5-sonnet:      22% of requests
+  openai/gpt-4o:                    18% of requests
+  openai/gpt-4o-mini:                2% of requests
+
+Cost Distribution (by total cost):
+  anthropic/claude-sonnet-4:        39% of total
+  anthropic/claude-3.5-sonnet:      35% of total
+  openai/gpt-4o:                    16% of total
+  openai/gpt-4o-mini:               <1% of total
+
+SCHEMA EXAMPLES PROVIDED:
+=========================
+✓ Complete field-by-field schema table
+✓ 3 real JSON examples from actual costs.jsonl
+✓ Record evolution patterns (31-day window)
+✓ Cost range analysis: $0.000758 to $0.04786 (63x variance)
+✓ Token consumption range: 1,778 to 6,889 tokens/request
+
+AGGREGATION ALGORITHMS DOCUMENTED:
+===================================
+✓ Session-level aggregation (filter by session_id)
+✓ Daily aggregation (UTC midnight boundary)
+✓ Monthly aggregation (calendar month boundary)
+✓ By-model breakdown algorithm
+✓ Performance analysis (timing, scaling)
+✓ 3 concrete real-world examples from actual data
+✓ Edge cases (month transitions, partial months, cross-day sessions)
+
+INTEGRATION POINTS IDENTIFIED:
+==============================
+- CostsParser: lib/costs_parser.py (main aggregation engine)
+- BudgetManager: lib/budget_manager.py (budget enforcement)
+- Cost Tracking UI: components/dashboard/cost_tracking.py
+- Configuration: ~/.zeroclaw/config.toml
+
+REPORT STRUCTURE (9 Sections):
+==============================
+1. Executive Summary
+2. costs.jsonl Complete Schema (1.4 subsections with real examples)
+3. Aggregation Logic Documentation (2.6 subsections with algorithms)
+4. Cost Reporting Capabilities (3.4 subsections with formats)
+5. Historical Analysis Capabilities (4.3 subsections)
+6. Gap Analysis & Recommendations (5.3 subsections)
+7. Detailed Aggregation Examples (3 scenarios)
+8. Known Limitations & Workarounds (4 items)
+9. Integration Points for Future Enhancements
++ Summary Table: Current vs. Proposed Features
+
+RECOMMENDATION PRIORITY MATRIX:
+================================
+Phase 1 (1-2 weeks): Timezone awareness + Retention policy + Basic trends
+Phase 2 (1 month): Period comparison + Time breakdown + Advanced filters
+Phase 3 (2-3 months): Forecasting + Alerting + Data integration
+
+RESEARCH ARTIFACTS:
+===================
+✓ Actual costs.jsonl file analyzed (50 records)
+✓ costs_parser.py fully documented (250 lines of code)
+✓ budget_manager.py fully documented (242 lines of code)
+✓ cost_tracking.py UI component examined (215 lines)
+✓ generate_sample_costs.py reviewed (133 lines)
+✓ Grep searches: 37+ files reviewed for cost-related code
+
+NEXT STEPS FOR IMPLEMENTATION:
+==============================
+1. Review AGENT_05_COSTS_REPORT.md (comprehensive reference)
+2. Prioritize gaps: Timezone support (highest impact)
+3. Design retention policy schema
+4. Implement Phase 1 features
+5. Add tests for edge cases (month boundaries, timezone transitions)
+6. Update UI dashboard with trend widgets
+

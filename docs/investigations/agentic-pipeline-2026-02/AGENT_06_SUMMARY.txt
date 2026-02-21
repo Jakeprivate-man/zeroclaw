@@ -1,0 +1,237 @@
+================================================================================
+AGENT 06: BUDGET CHECKING & ENFORCEMENT INVESTIGATION - SUMMARY
+================================================================================
+
+Investigation Date: 2026-02-21
+Status: COMPLETE
+Deliverable: AGENT_06_BUDGET_REPORT.md (1,163 lines)
+
+================================================================================
+KEY FINDINGS
+================================================================================
+
+1. ARCHITECTURE STATUS: COMPLETE BUT DISCONNECTED
+
+   The ZeroClaw budget system is FULLY IMPLEMENTED in Rust and Python, but the
+   enforcement layer is NOT WIRED INTO active execution paths.
+
+   ✅ Rust infrastructure: 536 lines of complete, tested code (src/cost/tracker.rs)
+   ✅ Python UI layer: Full visualization and alerts (streamlit-app/lib/budget_manager.py)
+   ❌ Integration: check_budget() not called during actual requests
+   ❌ Enforcement: Budget limits exist but don't block requests
+
+2. BUDGET CONFIGURATION
+
+   Location: ~/.zeroclaw/config.toml [cost] section
+   
+   Settings:
+   - enabled: true/false (default: false)
+   - daily_limit_usd: $10.00 (default)
+   - monthly_limit_usd: $100.00 (default)
+   - warn_at_percent: 80 (configurable, 0-100)
+   - allow_override: false (not yet wired)
+   - prices: Per-model pricing (input/output per 1M tokens)
+
+3. COST TRACKING & STORAGE
+
+   Format: costs.jsonl (JSON Lines, one record per API request)
+   Location: ~/.zeroclaw/state/costs.jsonl
+   
+   Fields: id, session_id, model, input_tokens, output_tokens, total_tokens,
+           cost_usd, timestamp
+   
+   Cost calculation:
+   cost_usd = (input_tokens / 1M) * input_price + (output_tokens / 1M) * output_price
+
+4. ENFORCEMENT WORKFLOW
+
+   Status: NOT ACTIVE (code complete but not called)
+   
+   Intended flow:
+   1. User sends message
+   2. Agent receives request
+   3. [MISSING] Call CostTracker.check_budget(estimated_cost)
+   4. If BudgetCheck::Exceeded → Block request, deny with error
+   5. If BudgetCheck::Warning → Proceed with alert
+   6. If BudgetCheck::Allowed → Proceed normally
+   7. After response: Call CostTracker.record_usage(actual_tokens)
+   8. Save to costs.jsonl with fsync (durable)
+
+5. ALERT THRESHOLDS
+
+   WARNING LEVEL (Soft Alert):
+   - Triggered: When projected usage >= warn_at_percent of limit
+   - Default: 80% of budget
+   - Action: UI shows yellow alert (⚠️), request proceeds
+   
+   HARD LIMIT (Hard Block):
+   - Triggered: When projected usage > limit
+   - Default: 100% of budget
+   - Action: Request denied (🚨), no API call made, cost-saving
+
+   RESET SCHEDULE:
+   - Daily: 00:00:00 UTC each day
+   - Monthly: 00:00:00 UTC on day 1 of each month
+
+6. NOTIFICATION SYSTEM
+
+   Current: UI-only (Streamlit dashboard)
+   - 3-column metrics (session, daily, monthly cost)
+   - Delta indicators with percentage of limit
+   - Alert messages (yellow warning, red exceeded)
+   - Cost breakdown pie chart by model
+   
+   Gateway API endpoints:
+   - GET /api/cost-summary (declared, implementation status unclear)
+   - GET /api/budget-check (declared, implementation status unclear)
+   
+   Missing: Email/webhook/Telegram notifications
+
+7. CRITICAL INTEGRATION GAPS
+
+   The CostTracker exists but is never called:
+   
+   ❌ src/providers/ - No check_budget() before API calls
+   ❌ src/agent/loop_.rs - No pre-request budget validation
+   ❌ src/tools/ - No budget checks for API-consuming tools
+   ❌ src/gateway/mod.rs - No budget enforcement for webhooks
+   
+   Configuration flag allow_override exists but:
+   ❌ Not used in execution flow
+   ❌ No CLI support (--override flag)
+   ❌ No database tracking of overrides
+
+8. TESTING COVERAGE
+
+   7 unit tests in src/cost/tracker.rs - ALL PASSING
+   
+   Scenarios covered:
+   - Initialization and configuration
+   - Cost recording and aggregation
+   - Budget exceeded detection
+   - Session-scoped cost isolation
+   - Error handling for malformed data
+   - Input validation (NaN, infinity, negative values)
+
+================================================================================
+FILE INVENTORY
+================================================================================
+
+RUST IMPLEMENTATION:
+- src/cost/tracker.rs (536 lines) - Main budget enforcement logic
+- src/cost/types.rs (194 lines) - Data structures (BudgetCheck, TokenUsage, etc.)
+- src/cost/mod.rs (6 lines) - Module exports
+- src/config/schema.rs - CostConfig struct definition
+- src/security/policy.rs - SecurityPolicy with max_cost_per_day_cents field
+
+PYTHON IMPLEMENTATION:
+- streamlit-app/lib/budget_manager.py (242 lines) - Budget checking UI layer
+- streamlit-app/lib/costs_parser.py (250 lines) - Cost data reading
+- streamlit-app/lib/gateway_client.py - API client with budget endpoints
+- streamlit-app/components/dashboard/cost_tracking.py - UI visualization
+- streamlit-app/components/dashboard/token_usage.py - Token metrics
+
+DATA FILES:
+- ~/.zeroclaw/config.toml - Configuration with [cost] section
+- ~/.zeroclaw/state/costs.jsonl - Cost records database
+
+================================================================================
+SECURITY CONSIDERATIONS
+================================================================================
+
+Input Validation:
+✅ Cost estimates must be finite and non-negative
+✅ NaN/Infinity injection prevented
+✅ Integer overflow safeguards
+
+Atomicity & Durability:
+✅ Cost records persisted with fsync before returning
+✅ No loss on crash mid-request
+
+Session Isolation:
+✅ Session statistics only count costs in current session
+✅ Daily/monthly totals aggregate across all sessions
+✅ Prevents cost hiding by session switching
+
+Configuration Security:
+✅ warn_at_percent clamped to 0-100
+✅ Limits must be positive floats
+✅ Prices sanitized to prevent negative costs
+
+================================================================================
+RECOMMENDED NEXT STEPS (PRIORITY ORDER)
+================================================================================
+
+PRIORITY 1 (CRITICAL - Wire into Execution):
+1. Add check_budget() call in provider request execution path
+2. Calculate estimated_cost based on model pricing before API call
+3. Return BudgetCheck::Exceeded to block request if over limit
+4. Integrate with existing error handling/response system
+5. Test with strict budget configuration ($0.10 daily limit)
+
+PRIORITY 2 (HIGH - Override Mechanism):
+1. Wire allow_override configuration flag into execution
+2. Add CLI support: --override-budget or --force
+3. Track override usage in database
+4. Add logging/audit trail for compliance
+
+PRIORITY 3 (HIGH - Notifications):
+1. Implement email notifications on budget exceeded
+2. Add webhook integration for custom handling
+3. Add Telegram/Pushover alerts via existing channel system
+4. Allow configurable alert recipients and triggers
+
+PRIORITY 4 (MEDIUM - UI Enhancements):
+1. Add budget burn rate chart (spending trend)
+2. Add cost projection to end of period
+3. Add per-model budget breakdown with sparklines
+4. Add budget override request UI
+5. Add settings page for budget configuration
+
+PRIORITY 5 (MEDIUM - Granular Budgets):
+1. Per-agent budget limits
+2. Per-model spend caps
+3. Per-channel (Telegram, Discord) budgets
+4. Hierarchical budget allocation
+
+PRIORITY 6 (LONG-TERM - Advanced Features):
+1. Budget carryover (50% of unused daily carries forward)
+2. Cost forecasting based on usage patterns
+3. Budget analytics dashboard
+4. Cost optimization recommendations
+5. Spend reports (daily, weekly, monthly)
+
+================================================================================
+TESTING COMMANDS
+================================================================================
+
+# Run Rust unit tests
+cargo test cost:: --lib
+
+# Integration test with Streamlit
+streamlit run streamlit-app/app.py
+# Then check dashboard.py -> cost_tracking component
+
+# Verify config loading
+grep -A 10 "\[cost\]" ~/.zeroclaw/config.toml
+
+# Check cost file exists and has records
+cat ~/.zeroclaw/state/costs.jsonl | head -5
+
+================================================================================
+REPORT LOCATION
+================================================================================
+
+Full detailed report: /Users/jakeprivate/zeroclaw/AGENT_06_BUDGET_REPORT.md
+
+Report includes:
+- Complete budget workflow diagrams
+- Configuration examples (strict, permissive, disabled, custom)
+- Cost calculation formulas with examples
+- Security analysis and safeguards
+- UI enhancement code templates
+- Database schema documentation
+- Known limitations and future work
+- 1,163 lines of comprehensive investigation
+
+================================================================================

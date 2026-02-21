@@ -1,0 +1,177 @@
+================================================================================
+AGENT 08 - FILES EXAMINED DURING INVESTIGATION
+================================================================================
+
+PRIMARY INVESTIGATION FILES (CORE PIPELINE)
+================================================================================
+
+1. /Users/jakeprivate/zeroclaw/src/agent/loop_.rs
+   Purpose: Tool call parsing and execution orchestration
+   Key Functions:
+     - parse_tool_calls() [lines 621-760]: Multi-format tool call extraction
+     - execute_one_tool() [lines 892-938]: Individual tool execution
+     - run_tool_call_loop() [lines 1046-1254]: Main tool execution loop
+   Status: COMPLETE - extracts and executes correctly
+
+2. /Users/jakeprivate/zeroclaw/src/agent/agent.rs
+   Purpose: Agent orchestration and tool execution management
+   Key Functions:
+     - execute_tool_call() [lines 359-395]: Executes single tool + records event
+     - execute_tools() [lines 397-411]: Batch execution (parallel/sequential)
+     - turn() [lines 456-510]: Conversation turn with tool handling
+   Status: COMPLETE - execution works, but no persistent storage
+
+3. /Users/jakeprivate/zeroclaw/src/agent/dispatcher.rs
+   Purpose: Tool call parsing strategies and result formatting
+   Key Types:
+     - ParsedToolCall: Parsed tool call representation
+     - ToolExecutionResult: Tool execution outcome
+   Status: COMPLETE - dispatching works correctly
+
+4. /Users/jakeprivate/zeroclaw/src/tools/traits.rs
+   Purpose: Tool interface definition
+   Key Types:
+     - Tool trait: execute(), name(), description()
+     - ToolResult: success, output, error
+   Status: COMPLETE - interface well-defined
+
+5. /Users/jakeprivate/zeroclaw/src/observability/traits.rs
+   Purpose: Observability event types and observer trait
+   Key Types:
+     - ObserverEvent enum: Event types including ToolCall
+     - Observer trait: record_event(), record_metric()
+   Status: INCOMPLETE - ToolCall variant missing critical fields
+
+6. /Users/jakeprivate/zeroclaw/src/observability/log.rs
+   Purpose: Tracing-based observer implementation
+   Key Functions:
+     - LogObserver::record_event(): Emits to tracing::info!()
+   Status: EPHEMERAL ONLY - no file persistence
+
+7. /Users/jakeprivate/zeroclaw/src/observability/mod.rs
+   Purpose: Observer factory and configuration
+   Key Functions:
+     - create_observer(): Creates appropriate observer from config
+   Status: NO TOOL HISTORY OBSERVER - critical gap
+
+PYTHON LAYER FILES (EXPECTATIONS & UI)
+================================================================================
+
+8. /Users/jakeprivate/zeroclaw/streamlit-app/lib/tool_history_parser.py
+   Purpose: Parse tool execution history from JSONL file
+   Key Types:
+     - ToolExecution: Complete execution record (id, tool_name, input_params, 
+       output, success, duration_ms, timestamp, approved, approver, danger_level)
+     - ToolHistoryParser: Read from ~/ .zeroclaw/state/tool_history.jsonl
+   Key Methods:
+     - read_history(): Read and parse JSONL
+     - append_execution(): Write to JSONL
+     - get_tool_stats(): Summary statistics
+     - get_recent_tools(): Recent executions
+     - get_failed_tools(): Failed executions
+   Status: READY BUT NO DATA - file doesn't exist, nothing writes to it
+
+9. /Users/jakeprivate/zeroclaw/streamlit-app/components/dashboard/live_metrics.py
+   Purpose: Render live tool execution metrics in Streamlit UI
+   Key Functions:
+     - render_tool_metrics(): Display tool execution data
+     - Uses: tool_history_parser.get_tool_stats(), get_recent_tools()
+   Status: READY BUT NO DATA - calls parser which returns empty list
+
+10. /Users/jakeprivate/zeroclaw/streamlit-app/test_team2_backend.py
+    Purpose: Backend integration tests
+    Status: Tests costs.jsonl but NOT tool_history.jsonl
+
+11. /Users/jakeprivate/zeroclaw/streamlit-app/test_team_integration.py
+    Purpose: Cross-team integration tests
+    Key Test:
+      - test_tool_history_parser() [line 102]: Creates parser, reads history
+    Status: Test passes even when file missing (returns empty list)
+
+OTHER RELEVANT FILES
+================================================================================
+
+12. /Users/jakeprivate/zeroclaw/src/config/mod.rs
+    Purpose: Configuration loading and schema
+    Status: Initializes ~/.zeroclaw/state directory structure
+    Finding: Directory exists but tool_history.jsonl not created
+
+13. /Users/jakeprivate/zeroclaw/src/observability/prometheus.rs
+    Purpose: Prometheus metrics observer
+    Status: Metrics-only, no event persistence
+
+14. /Users/jakeprivate/zeroclaw/src/observability/otel.rs
+    Purpose: OpenTelemetry observer
+    Status: External telemetry, no local file storage
+
+15. /Users/jakeprivate/zeroclaw/src/observability/noop.rs
+    Purpose: No-op observer (default)
+    Status: Discards all events
+
+INVESTIGATION STATISTICS
+================================================================================
+
+Files Examined:         15
+Rust Files:             9
+Python Files:           6
+
+Tool Call Capture:      Complete (loop_.rs)
+Tool Execution:         Complete (agent.rs)
+Result Storage:         MISSING (no writer)
+Event Recording:        Partial (ephemeral only)
+Python UI:              Ready (no data source)
+
+Critical Gap:           No persistent tool history (observer → JSONL)
+Expected File:          ~/.zeroclaw/state/tool_history.jsonl
+Actual File:            DOES NOT EXIST
+
+Search Results:
+  grep "tool_history.jsonl" /src/*.rs    → 0 matches
+  grep "append_execution" /src/*.rs      → 0 matches
+  grep "ToolExecution" /src/*.rs         → 0 matches
+
+Expected Data Schema (10 fields):
+  1. id                 - MISSING from Rust
+  2. tool_name          - Available (ObserverEvent.tool)
+  3. input_params       - MISSING from Rust
+  4. output             - MISSING from Rust
+  5. success            - Available (ObserverEvent.success)
+  6. duration_ms        - Available (ObserverEvent.duration)
+  7. timestamp          - MISSING from Rust
+  8. approved           - MISSING from Rust
+  9. approver           - MISSING from Rust
+  10. danger_level      - MISSING from Rust
+
+Data Completeness: 3/10 fields = 30%
+
+AUDIT TRAIL
+================================================================================
+
+Investigation Method:
+  1. Glob search: Found tool_history_parser.py
+  2. Read Python expectation: ToolExecution dataclass
+  3. Grep search: Found only Python references
+  4. Examined Rust tool execution: loop_.rs, agent.rs, dispatcher.rs
+  5. Examined observability layer: traits.rs, log.rs, mod.rs
+  6. Examined Python UI usage: live_metrics.py
+  7. Cross-referenced: test files, config, integration points
+
+Verification:
+  - Grep: "tool_history" in Rust → NO MATCHES
+  - Grep: "append_execution" in Rust → NO MATCHES  
+  - Grep: "ToolExecution" in Rust → NO MATCHES
+  - File exists check: ~/.zeroclaw/state/tool_history.jsonl → MISSING
+  
+Confidence Level: VERY HIGH
+- Code examination: Complete
+- Integration points: Mapped
+- Gap identification: Definitive
+- Recommendations: Clear
+
+================================================================================
+Generated: 2026-02-21
+Investigator: Agent 08
+Report: AGENT_08_TOOLS_REPORT.md (1012 lines, comprehensive)
+Summary: AGENT_08_EXECUTIVE_SUMMARY.txt
+Files Index: AGENT_08_FILES_EXAMINED.txt (this document)
+================================================================================

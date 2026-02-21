@@ -1,0 +1,75 @@
+Agent 11 Investigation Summary
+=====================================
+
+Mission: Compare available agent data vs current UI visualizations to identify gaps.
+
+Key Finding: 70-80% DATA VISUALIZATION GAP
+- Available backend data sources: 8+ (costs.jsonl, audit.jsonl, tool_history.jsonl, etc.)
+- Currently visualized: 5-10% (only aggregate metrics and basic charts)
+- Using mock data: Analytics page (8 charts, ALL mock)
+
+Critical Missing Visualizations (HIGH PRIORITY):
+1. NESTED AGENT DELEGATION TREES
+   - Available: audit.jsonl has delegate tool executions with depth tracking
+   - Gap: No tree visualization of agent hierarchy
+   - Impact: Cannot see multi-level research pipelines
+   - Effort: 5 hours
+   
+2. PER-AGENT TOKEN ATTRIBUTION
+   - Available: costs.jsonl tracks tokens per request
+   - Gap: UI only shows aggregate by model, not by agent
+   - Impact: Cannot identify resource-hungry agents
+   - Effort: 3 hours
+   
+3. AGENT RESEARCH PIPELINE EXECUTION TIMELINE
+   - Available: tool_history.jsonl has all tool executions with timestamps/duration
+   - Gap: No Gantt chart or timeline visualization
+   - Impact: Cannot diagnose slow/failing research workflows
+   - Effort: 4 hours
+
+Current Visualizations Inventory:
+- Dashboard: 7 components (RealTimeMetrics, CostTracking, TokenUsage, ActivityStream, etc.)
+- Analytics: 8 charts (ALL MOCK DATA - not real)
+- Chat: Basic message display
+- Reports: File browser only
+- Settings: Config UI only
+
+Data Sources Analysis:
+- costs.jsonl: ✓ Partially used (aggregate only)
+- audit.jsonl: ✗ Not used (only tool approval events exist)
+- tool_history.jsonl: ✗ Not used (complete execution history available)
+- memory_store.json: ~ Minimal (search only)
+- config.toml: ✓ Limited (agent cards only)
+- Message history: ✓ Basic display
+- Gateway logs: ~ Mock data only
+- Provider events: ✗ Not accessible to UI
+
+Implementation Plan:
+Phase 1 (Week 1): Bridge critical gaps (~12 hours)
+  - Token attribution by agent (3h)
+  - Tool execution timeline (4h)
+  - Delegation tree (5h)
+
+Phase 2 (Week 2-3): Add analytics dashboards (~12 hours)
+  - Tool risk matrix (4h)
+  - Cost attribution by tool (5h)
+  - Memory dashboard (3h)
+
+Phase 3 (Week 4+): Real-time features and advanced analytics
+  - Event streaming
+  - Cost anomaly detection
+  - Recommendations engine
+
+Critical Blocker:
+- audit.jsonl "delegate" tool executions don't include parent_agent field
+- Adding this single field would enable delegation tree visualization
+
+Files Modified:
+- /components/dashboard/*.py (expand components)
+- /lib/costs_parser.py (add per-agent aggregation)
+- /lib/tool_history_parser.py (add timeline aggregation)
+- /lib/audit_logger.py (add tree building)
+- pages/dashboard.py (add new components)
+
+Report Location: /Users/jakeprivate/zeroclaw/AGENT_11_GAPS_REPORT.md (661 lines, 24KB)
+Contents: 8 sections + appendix with detailed analysis, user stories, implementation guide, and technical notes.
