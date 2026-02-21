@@ -1,19 +1,20 @@
 //! CLI-facing delegation log reporter.
 //!
-//! Public entry points used by `zeroclaw delegations [list|show|stats|export]`:
+//! Public entry points used by `zeroclaw delegations [list|show|stats|export|diff]`:
 //! - [`print_summary`]: overall totals across all stored runs.
 //! - [`print_runs`]: table of runs, newest first.
 //! - [`print_tree`]: indented delegation tree for one run.
 //! - [`print_stats`]: per-agent aggregated statistics table.
 //! - [`print_export`]: stream delegation events as JSONL or CSV.
+//! - [`print_diff`]: side-by-side comparison of two runs with token/cost deltas.
 //! - [`get_log_summary`]: programmatic aggregate for `zeroclaw status`.
 //!
 //! All parsing is done via `serde_json::Value` — no new dependencies.
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 // ─── Internal types ───────────────────────────────────────────────────────────
@@ -241,6 +242,38 @@ fn csv_field(s: &str) -> String {
     }
 }
 
+// ─── Diff helpers ─────────────────────────────────────────────────────────────
+
+/// Return the first stored run whose ID starts with `prefix`, or `None`.
+///
+/// `runs` must be sorted newest-first (as returned by [`collect_runs`]) so
+/// that prefix lookups consistently resolve to the most recent matching run.
+fn resolve_run_id<'a>(runs: &'a [RunInfo], prefix: &str) -> Option<&'a str> {
+    runs.iter()
+        .find(|r| r.run_id.starts_with(prefix))
+        .map(|r| r.run_id.as_str())
+}
+
+/// Format a signed token delta for display (e.g. `+1000`, `-200`, `0`).
+fn fmt_delta_tokens(delta: i64) -> String {
+    match delta.cmp(&0) {
+        std::cmp::Ordering::Greater => format!("+{delta}"),
+        std::cmp::Ordering::Less => delta.to_string(),
+        std::cmp::Ordering::Equal => "0".to_owned(),
+    }
+}
+
+/// Format a signed cost delta for display (e.g. `+$0.0030`, `-$0.0010`, `$0.0000`).
+fn fmt_delta_cost(delta: f64) -> String {
+    if delta > 0.000_05 {
+        format!("+${delta:.4}")
+    } else if delta < -0.000_05 {
+        format!("-${:.4}", delta.abs())
+    } else {
+        "$0.0000".to_owned()
+    }
+}
+
 // ─── Public data types ────────────────────────────────────────────────────────
 
 /// Output format for [`print_export`].
@@ -271,6 +304,204 @@ pub struct LogSummary {
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
+
+/// Print a side-by-side per-agent comparison of two runs to stdout.
+///
+/// Each run is identified by a full UUID or any unique prefix of one.
+/// When `run_b` is `None` the function defaults to the most recent stored run
+/// that is not `run_a`.
+///
+/// Output columns: `agent | del_A | del_B | tok_A | tok_B | Δtok | cost_A | cost_B | Δcost`
+/// A totals row is appended at the bottom.
+///
+/// Returns an error when either run ID cannot be resolved or when no second
+/// run is available to diff against.
+pub fn print_diff(log_path: &Path, run_a: &str, run_b: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    let runs = collect_runs(&all_events);
+    if runs.is_empty() {
+        println!("No runs found.");
+        return Ok(());
+    }
+
+    // Resolve run_a — supports prefix matching (newest-first tie-break).
+    let resolved_a = resolve_run_id(&runs, run_a)
+        .ok_or_else(|| anyhow::anyhow!("run not found matching prefix: {run_a}"))?
+        .to_owned();
+
+    // Resolve run_b — defaults to the most recent stored run that is not run_a.
+    let resolved_b = if let Some(b) = run_b {
+        resolve_run_id(&runs, b)
+            .ok_or_else(|| anyhow::anyhow!("run not found matching prefix: {b}"))?
+            .to_owned()
+    } else {
+        runs.iter()
+            .find(|r| r.run_id != resolved_a)
+            .map(|r| r.run_id.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "only one run stored — cannot diff; \
+                     provide a second run ID or record another run first"
+                )
+            })?
+    };
+
+    if resolved_a == resolved_b {
+        bail!("both run IDs resolve to the same run ({resolved_a}); provide two distinct runs");
+    }
+
+    // Filter events per run.
+    let events_a: Vec<Value> = all_events
+        .iter()
+        .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(resolved_a.as_str()))
+        .cloned()
+        .collect();
+    let events_b: Vec<Value> = all_events
+        .iter()
+        .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(resolved_b.as_str()))
+        .cloned()
+        .collect();
+
+    let stats_a = collect_agent_stats(&events_a);
+    let stats_b = collect_agent_stats(&events_b);
+
+    // Build lookup maps.
+    let map_a: HashMap<String, &AgentStats> =
+        stats_a.iter().map(|s| (s.agent_name.clone(), s)).collect();
+    let map_b: HashMap<String, &AgentStats> =
+        stats_b.iter().map(|s| (s.agent_name.clone(), s)).collect();
+
+    // Union of all agent names, sorted by combined token weight descending.
+    let mut all_agents: Vec<String> = {
+        let mut names: HashSet<String> = HashSet::new();
+        for s in &stats_a {
+            names.insert(s.agent_name.clone());
+        }
+        for s in &stats_b {
+            names.insert(s.agent_name.clone());
+        }
+        names.into_iter().collect()
+    };
+    all_agents.sort_by(|nx, ny| {
+        let w_x = map_a.get(nx.as_str()).map_or(0, |s| s.total_tokens)
+            + map_b.get(nx.as_str()).map_or(0, |s| s.total_tokens);
+        let w_y = map_a.get(ny.as_str()).map_or(0, |s| s.total_tokens)
+            + map_b.get(ny.as_str()).map_or(0, |s| s.total_tokens);
+        w_y.cmp(&w_x).then(nx.cmp(ny))
+    });
+
+    // Run metadata for the header.
+    let info_a = runs.iter().find(|r| r.run_id == resolved_a);
+    let info_b = runs.iter().find(|r| r.run_id == resolved_b);
+    let ts_a = info_a
+        .and_then(|r| r.start_time)
+        .map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .unwrap_or_else(|| "unknown".to_owned());
+    let ts_b = info_b
+        .and_then(|r| r.start_time)
+        .map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .unwrap_or_else(|| "unknown".to_owned());
+
+    println!("Delegation Diff");
+    println!(
+        "  A: [{}]  {}",
+        &resolved_a[..8.min(resolved_a.len())],
+        ts_a
+    );
+    println!(
+        "  B: [{}]  {}",
+        &resolved_b[..8.min(resolved_b.len())],
+        ts_b
+    );
+    println!();
+    println!(
+        "{:<22} {:>6} {:>6}  {:>8} {:>8} {:>8}  {:>8} {:>8} {:>8}",
+        "agent", "del_A", "del_B", "tok_A", "tok_B", "Δtok", "cost_A", "cost_B", "Δcost"
+    );
+    println!("{}", "─".repeat(88));
+
+    let mut total_del_a: usize = 0;
+    let mut total_del_b: usize = 0;
+    let mut total_tok_a: u64 = 0;
+    let mut total_tok_b: u64 = 0;
+    let mut total_cost_a: f64 = 0.0;
+    let mut total_cost_b: f64 = 0.0;
+
+    for name in &all_agents {
+        let a_opt = map_a.get(name.as_str());
+        let b_opt = map_b.get(name.as_str());
+
+        let del_a = a_opt.map_or(0, |s| s.delegation_count);
+        let del_b = b_opt.map_or(0, |s| s.delegation_count);
+        let tok_a = a_opt.map_or(0, |s| s.total_tokens);
+        let tok_b = b_opt.map_or(0, |s| s.total_tokens);
+        let cost_a = a_opt.map_or(0.0, |s| s.total_cost_usd);
+        let cost_b = b_opt.map_or(0.0, |s| s.total_cost_usd);
+
+        let tok_a_str = if tok_a > 0 { tok_a.to_string() } else { "—".to_owned() };
+        let tok_b_str = if tok_b > 0 { tok_b.to_string() } else { "—".to_owned() };
+        let tok_delta_str = if tok_a == 0 && tok_b == 0 {
+            "—".to_owned()
+        } else {
+            fmt_delta_tokens(tok_b as i64 - tok_a as i64)
+        };
+        let cost_a_str = if cost_a > 0.0 { format!("${cost_a:.4}") } else { "—".to_owned() };
+        let cost_b_str = if cost_b > 0.0 { format!("${cost_b:.4}") } else { "—".to_owned() };
+        let cost_delta_str = if cost_a == 0.0 && cost_b == 0.0 {
+            "—".to_owned()
+        } else {
+            fmt_delta_cost(cost_b - cost_a)
+        };
+
+        println!(
+            "{:<22} {:>6} {:>6}  {:>8} {:>8} {:>8}  {:>8} {:>8} {:>8}",
+            name, del_a, del_b, tok_a_str, tok_b_str, tok_delta_str,
+            cost_a_str, cost_b_str, cost_delta_str,
+        );
+
+        total_del_a += del_a;
+        total_del_b += del_b;
+        total_tok_a += tok_a;
+        total_tok_b += tok_b;
+        total_cost_a += cost_a;
+        total_cost_b += cost_b;
+    }
+
+    println!("{}", "─".repeat(88));
+    let total_tok_delta_str = if total_tok_a == 0 && total_tok_b == 0 {
+        "—".to_owned()
+    } else {
+        fmt_delta_tokens(total_tok_b as i64 - total_tok_a as i64)
+    };
+    let total_cost_delta_str = if total_cost_a == 0.0 && total_cost_b == 0.0 {
+        "—".to_owned()
+    } else {
+        fmt_delta_cost(total_cost_b - total_cost_a)
+    };
+    println!(
+        "{:<22} {:>6} {:>6}  {:>8} {:>8} {:>8}  {:>8} {:>8} {:>8}",
+        "TOTAL",
+        total_del_a,
+        total_del_b,
+        if total_tok_a > 0 { total_tok_a.to_string() } else { "—".to_owned() },
+        if total_tok_b > 0 { total_tok_b.to_string() } else { "—".to_owned() },
+        total_tok_delta_str,
+        if total_cost_a > 0.0 { format!("${total_cost_a:.4}") } else { "—".to_owned() },
+        if total_cost_b > 0.0 { format!("${total_cost_b:.4}") } else { "—".to_owned() },
+        total_cost_delta_str,
+    );
+    println!();
+    println!(
+        "Use `zeroclaw delegations diff <run_a> <run_b>` to compare two specific runs."
+    );
+    Ok(())
+}
 
 /// Stream delegation events to stdout as JSONL or CSV.
 ///
@@ -966,5 +1197,72 @@ mod tests {
         let result = print_export(&path, Some("run-keep"), ExportFormat::Jsonl);
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn resolve_run_id_returns_first_prefix_match() {
+        let runs = vec![
+            RunInfo { run_id: "aaa-newer".to_owned(), start_time: None, delegation_count: 0, total_tokens: 0, total_cost_usd: 0.0 },
+            RunInfo { run_id: "bbb-older".to_owned(), start_time: None, delegation_count: 0, total_tokens: 0, total_cost_usd: 0.0 },
+        ];
+        assert_eq!(resolve_run_id(&runs, "aaa"), Some("aaa-newer"));
+        assert_eq!(resolve_run_id(&runs, "bbb"), Some("bbb-older"));
+        // Full ID also works
+        assert_eq!(resolve_run_id(&runs, "aaa-newer"), Some("aaa-newer"));
+    }
+
+    #[test]
+    fn resolve_run_id_returns_none_when_no_match() {
+        let runs = vec![
+            RunInfo { run_id: "aaa-1".to_owned(), start_time: None, delegation_count: 0, total_tokens: 0, total_cost_usd: 0.0 },
+        ];
+        assert_eq!(resolve_run_id(&runs, "xyz"), None);
+    }
+
+    #[test]
+    fn print_diff_on_empty_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_diff_empty.jsonl");
+        let _ = std::fs::remove_file(&path);
+        let result = print_diff(&path, "any-prefix", None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_diff_two_runs_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_diff_two.jsonl");
+        let mut lines = Vec::new();
+        lines.push(serde_json::to_string(&make_start("run-alpha", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-alpha", "main", 0, "2026-01-01T10:00:05Z", 1000, 0.003, true)).unwrap());
+        lines.push(serde_json::to_string(&make_start("run-beta", "main", 0, "2026-01-02T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-beta", "main", 0, "2026-01-02T10:00:05Z", 2000, 0.006, true)).unwrap());
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_diff(&path, "run-alpha", Some("run-beta"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_diff_defaults_run_b_to_most_recent_other() {
+        let path = std::env::temp_dir().join("zeroclaw_test_diff_default_b.jsonl");
+        let mut lines = Vec::new();
+        // run-older has earlier timestamp → run-newer will be newest → default run_b
+        lines.push(serde_json::to_string(&make_start("run-older", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-older", "main", 0, "2026-01-01T10:00:05Z", 1000, 0.003, true)).unwrap());
+        lines.push(serde_json::to_string(&make_start("run-newer", "main", 0, "2026-01-02T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-newer", "main", 0, "2026-01-02T10:00:05Z", 2000, 0.006, true)).unwrap());
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_diff(&path, "run-older", None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_diff_unknown_run_returns_error() {
+        let path = std::env::temp_dir().join("zeroclaw_test_diff_bad_run.jsonl");
+        let line = serde_json::to_string(&make_start("run-real", "main", 0, "2026-01-01T10:00:00Z")).unwrap();
+        std::fs::write(&path, line + "\n").unwrap();
+        let result = print_diff(&path, "run-nonexistent", None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_err());
     }
 }
