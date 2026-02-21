@@ -398,7 +398,9 @@ Examples:
   zeroclaw delegations export        # stream all events as JSONL
   zeroclaw delegations export --format csv --run <id>  # CSV for one run
   zeroclaw delegations diff <run_a>  # compare run_a vs most recent other run
-  zeroclaw delegations diff <run_a> <run_b>  # compare two specific runs")]
+  zeroclaw delegations diff <run_a> <run_b>  # compare two specific runs
+  zeroclaw delegations top           # global leaderboard by tokens (top 10)
+  zeroclaw delegations top --by cost --limit 5  # top 5 by cost")]
     Delegations {
         #[command(subcommand)]
         delegation_command: Option<DelegationCommands>,
@@ -446,6 +448,26 @@ enum DelegationCommands {
         #[arg(long, value_enum, default_value = "jsonl")]
         format: DelegationExportFormat,
     },
+    /// Show global agent leaderboard ranked by tokens or cost (all runs)
+    #[command(long_about = "\
+Aggregate all stored delegation events across every run and rank agents
+by cumulative token usage or cost.
+
+Output columns: # | agent | runs | delegations | tokens | cost
+
+Examples:
+  zeroclaw delegations top                    # top 10 by tokens
+  zeroclaw delegations top --by cost          # top 10 by cost
+  zeroclaw delegations top --limit 5          # top 5 by tokens
+  zeroclaw delegations top --by cost --limit 3  # top 3 by cost")]
+    Top {
+        /// Rank agents by tokens (default) or cost
+        #[arg(long, value_enum, default_value = "tokens")]
+        by: DelegationTopBy,
+        /// Maximum number of agents to show
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
 Compare per-agent delegation statistics between two runs side-by-side.
@@ -464,6 +486,16 @@ Examples:
         /// Second run ID or unique prefix (default: most recent other run)
         run_b: Option<String>,
     },
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, clap::ValueEnum)]
+enum DelegationTopBy {
+    /// Rank by cumulative token usage (highest first)
+    #[value(name = "tokens")]
+    Tokens,
+    /// Rank by cumulative cost in USD (highest first)
+    #[value(name = "cost")]
+    Cost,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, clap::ValueEnum)]
@@ -1090,6 +1122,15 @@ async fn main() -> Result<()> {
                         }
                     };
                     observability::delegation_report::print_export(&log_path, run.as_deref(), fmt)
+                }
+                Some(DelegationCommands::Top { by, limit }) => {
+                    let top_by = match by {
+                        DelegationTopBy::Tokens => {
+                            observability::delegation_report::TopBy::Tokens
+                        }
+                        DelegationTopBy::Cost => observability::delegation_report::TopBy::Cost,
+                    };
+                    observability::delegation_report::print_top(&log_path, top_by, limit)
                 }
                 Some(DelegationCommands::Diff { run_a, run_b }) => {
                     observability::delegation_report::print_diff(
