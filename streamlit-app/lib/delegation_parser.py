@@ -51,6 +51,44 @@ class DelegationNode:
         else:
             return "❌ Failed"
 
+    @property
+    def subtree_tokens(self) -> Optional[int]:
+        """Total tokens for this node plus all descendants.
+
+        Returns None only when neither this node nor any descendant has
+        token data. When any descendant has data, missing values are
+        treated as 0 so the rollup is still useful.
+        """
+        own = self.tokens_used or 0
+        child_total = sum(
+            c.subtree_tokens or 0 for c in self.children
+        )
+        total = own + child_total
+        # Return None only if there is genuinely no data anywhere in the subtree
+        has_any = (
+            self.tokens_used is not None
+            or any(c.subtree_tokens is not None for c in self.children)
+        )
+        return total if has_any else None
+
+    @property
+    def subtree_cost_usd(self) -> Optional[float]:
+        """Total cost (USD) for this node plus all descendants.
+
+        Returns None only when neither this node nor any descendant has
+        cost data.
+        """
+        own = self.cost_usd or 0.0
+        child_total = sum(
+            c.subtree_cost_usd or 0.0 for c in self.children
+        )
+        total = own + child_total
+        has_any = (
+            self.cost_usd is not None
+            or any(c.subtree_cost_usd is not None for c in self.children)
+        )
+        return total if has_any else None
+
 
 @dataclass
 class RunSummary:

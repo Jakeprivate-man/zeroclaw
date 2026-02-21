@@ -142,15 +142,50 @@ def _render_node(node: DelegationNode, depth: int, is_last: bool) -> None:
             if node.run_id:
                 st.markdown(f"**Run:** `{node.run_id[:16]}…`")
 
-        if node.tokens_used is not None or node.cost_usd is not None:
+        subtree_tokens = node.subtree_tokens
+        subtree_cost = node.subtree_cost_usd
+        has_own = node.tokens_used is not None or node.cost_usd is not None
+        has_subtree = subtree_tokens is not None or subtree_cost is not None
+
+        if has_own or has_subtree:
             st.markdown("---")
-            tcol1, tcol2 = st.columns(2)
-            with tcol1:
-                if node.tokens_used is not None:
-                    st.metric("Tokens", f"{node.tokens_used:,}")
-            with tcol2:
-                if node.cost_usd is not None:
-                    st.metric("Cost", f"${node.cost_usd:.4f}")
+            # Show per-node own cost/tokens
+            if has_own:
+                tcol1, tcol2 = st.columns(2)
+                with tcol1:
+                    if node.tokens_used is not None:
+                        st.metric("Tokens (own)", f"{node.tokens_used:,}")
+                with tcol2:
+                    if node.cost_usd is not None:
+                        st.metric("Cost (own)", f"${node.cost_usd:.4f}")
+
+            # Show subtree rollup only when it differs from own (i.e. has children)
+            if has_subtree and node.children:
+                own_t = node.tokens_used or 0
+                own_c = node.cost_usd or 0.0
+                rollup_differs = (
+                    (subtree_tokens is not None and subtree_tokens != own_t)
+                    or (subtree_cost is not None and abs((subtree_cost or 0.0) - own_c) > 1e-9)
+                )
+                if rollup_differs:
+                    rcol1, rcol2 = st.columns(2)
+                    with rcol1:
+                        if subtree_tokens is not None:
+                            st.metric(
+                                "Tokens (subtree)",
+                                f"{subtree_tokens:,}",
+                                delta=f"+{subtree_tokens - own_t:,} from children"
+                                if subtree_tokens > own_t else None,
+                            )
+                    with rcol2:
+                        if subtree_cost is not None:
+                            delta_c = subtree_cost - own_c
+                            st.metric(
+                                "Cost (subtree)",
+                                f"${subtree_cost:.4f}",
+                                delta=f"+${delta_c:.4f} from children"
+                                if delta_c > 1e-9 else None,
+                            )
 
         if node.is_complete:
             if node.success:
