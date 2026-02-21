@@ -404,7 +404,9 @@ Examples:
   zeroclaw delegations prune         # keep 20 most recent runs, remove the rest
   zeroclaw delegations prune --keep 5  # keep only 5 most recent runs
   zeroclaw delegations models        # model breakdown: tokens and cost per model
-  zeroclaw delegations models --run <id>  # model breakdown for one run")]
+  zeroclaw delegations models --run <id>  # model breakdown for one run
+  zeroclaw delegations providers     # provider breakdown: tokens and cost per provider
+  zeroclaw delegations providers --run <id>  # provider breakdown for one run")]
     Delegations {
         #[command(subcommand)]
         delegation_command: Option<DelegationCommands>,
@@ -504,6 +506,23 @@ Examples:
   zeroclaw delegations models              # all runs, sorted by tokens
   zeroclaw delegations models --run <id>  # scope to one run")]
     Models {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
+    /// Show per-provider token and cost breakdown (all runs or one run)
+    #[command(long_about = "\
+Aggregate delegation events by provider and print a breakdown table.
+
+Rows are sorted by cumulative tokens descending.  Use `--run` to scope
+to a single process invocation; omit it to aggregate across all runs.
+
+Output columns: # | provider | runs | delegations | tokens | cost
+
+Examples:
+  zeroclaw delegations providers              # all runs, sorted by tokens
+  zeroclaw delegations providers --run <id>  # scope to one run")]
+    Providers {
         /// Scope to a specific run ID (default: aggregate across all runs)
         #[arg(long)]
         run: Option<String>,
@@ -1024,10 +1043,7 @@ async fn main() -> Result<()> {
                         }
                     );
                     if let Some(ts) = s.latest_run_time {
-                        println!(
-                            "  Latest run:       {}",
-                            ts.format("%Y-%m-%d %H:%M:%S UTC")
-                        );
+                        println!("  Latest run:       {}", ts.format("%Y-%m-%d %H:%M:%S UTC"));
                     }
                 }
                 Ok(None) => println!("  No delegation data recorded yet."),
@@ -1165,9 +1181,7 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::Top { by, limit }) => {
                     let top_by = match by {
-                        DelegationTopBy::Tokens => {
-                            observability::delegation_report::TopBy::Tokens
-                        }
+                        DelegationTopBy::Tokens => observability::delegation_report::TopBy::Tokens,
                         DelegationTopBy::Cost => observability::delegation_report::TopBy::Cost,
                     };
                     observability::delegation_report::print_top(&log_path, top_by, limit)
@@ -1177,6 +1191,9 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::Models { run }) => {
                     observability::delegation_report::print_models(&log_path, run.as_deref())
+                }
+                Some(DelegationCommands::Providers { run }) => {
+                    observability::delegation_report::print_providers(&log_path, run.as_deref())
                 }
                 Some(DelegationCommands::Diff { run_a, run_b }) => {
                     observability::delegation_report::print_diff(

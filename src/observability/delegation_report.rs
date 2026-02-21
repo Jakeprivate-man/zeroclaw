@@ -10,6 +10,7 @@
 //! - [`print_top`]: global agent leaderboard ranked by tokens or cost.
 //! - [`print_prune`]: remove old runs from the log, keeping the N most recent.
 //! - [`print_models`]: per-model breakdown table across all (or one) run.
+//! - [`print_providers`]: per-provider breakdown table across all (or one) run.
 //! - [`get_log_summary`]: programmatic aggregate for `zeroclaw status`.
 //!
 //! All parsing is done via `serde_json::Value` — no new dependencies.
@@ -50,6 +51,14 @@ struct TopAgentRow {
 
 struct ModelRow {
     model: String,
+    run_count: usize,
+    delegation_count: usize,
+    total_tokens: u64,
+    total_cost_usd: f64,
+}
+
+struct ProviderRow {
+    provider: String,
     run_count: usize,
     delegation_count: usize,
     total_tokens: u64,
@@ -472,15 +481,31 @@ pub fn print_diff(log_path: &Path, run_a: &str, run_b: Option<&str>) -> Result<(
         let cost_a = a_opt.map_or(0.0, |s| s.total_cost_usd);
         let cost_b = b_opt.map_or(0.0, |s| s.total_cost_usd);
 
-        let tok_a_str = if tok_a > 0 { tok_a.to_string() } else { "—".to_owned() };
-        let tok_b_str = if tok_b > 0 { tok_b.to_string() } else { "—".to_owned() };
+        let tok_a_str = if tok_a > 0 {
+            tok_a.to_string()
+        } else {
+            "—".to_owned()
+        };
+        let tok_b_str = if tok_b > 0 {
+            tok_b.to_string()
+        } else {
+            "—".to_owned()
+        };
         let tok_delta_str = if tok_a == 0 && tok_b == 0 {
             "—".to_owned()
         } else {
             fmt_delta_tokens(tok_b as i64 - tok_a as i64)
         };
-        let cost_a_str = if cost_a > 0.0 { format!("${cost_a:.4}") } else { "—".to_owned() };
-        let cost_b_str = if cost_b > 0.0 { format!("${cost_b:.4}") } else { "—".to_owned() };
+        let cost_a_str = if cost_a > 0.0 {
+            format!("${cost_a:.4}")
+        } else {
+            "—".to_owned()
+        };
+        let cost_b_str = if cost_b > 0.0 {
+            format!("${cost_b:.4}")
+        } else {
+            "—".to_owned()
+        };
         let cost_delta_str = if cost_a == 0.0 && cost_b == 0.0 {
             "—".to_owned()
         } else {
@@ -489,8 +514,15 @@ pub fn print_diff(log_path: &Path, run_a: &str, run_b: Option<&str>) -> Result<(
 
         println!(
             "{:<22} {:>6} {:>6}  {:>8} {:>8} {:>8}  {:>8} {:>8} {:>8}",
-            name, del_a, del_b, tok_a_str, tok_b_str, tok_delta_str,
-            cost_a_str, cost_b_str, cost_delta_str,
+            name,
+            del_a,
+            del_b,
+            tok_a_str,
+            tok_b_str,
+            tok_delta_str,
+            cost_a_str,
+            cost_b_str,
+            cost_delta_str,
         );
 
         total_del_a += del_a;
@@ -517,17 +549,31 @@ pub fn print_diff(log_path: &Path, run_a: &str, run_b: Option<&str>) -> Result<(
         "TOTAL",
         total_del_a,
         total_del_b,
-        if total_tok_a > 0 { total_tok_a.to_string() } else { "—".to_owned() },
-        if total_tok_b > 0 { total_tok_b.to_string() } else { "—".to_owned() },
+        if total_tok_a > 0 {
+            total_tok_a.to_string()
+        } else {
+            "—".to_owned()
+        },
+        if total_tok_b > 0 {
+            total_tok_b.to_string()
+        } else {
+            "—".to_owned()
+        },
         total_tok_delta_str,
-        if total_cost_a > 0.0 { format!("${total_cost_a:.4}") } else { "—".to_owned() },
-        if total_cost_b > 0.0 { format!("${total_cost_b:.4}") } else { "—".to_owned() },
+        if total_cost_a > 0.0 {
+            format!("${total_cost_a:.4}")
+        } else {
+            "—".to_owned()
+        },
+        if total_cost_b > 0.0 {
+            format!("${total_cost_b:.4}")
+        } else {
+            "—".to_owned()
+        },
         total_cost_delta_str,
     );
     println!();
-    println!(
-        "Use `zeroclaw delegations diff <run_a> <run_b>` to compare two specific runs."
-    );
+    println!("Use `zeroclaw delegations diff <run_a> <run_b>` to compare two specific runs.");
     Ok(())
 }
 
@@ -855,8 +901,156 @@ pub fn print_models(log_path: &Path, run_id: Option<&str>) -> Result<()> {
         "TOTAL",
         "",
         sorted.iter().map(|r| r.delegation_count).sum::<usize>(),
-        if total_tok > 0 { total_tok.to_string() } else { "—".to_owned() },
-        if total_cost > 0.0 { format!("${total_cost:.4}") } else { "—".to_owned() },
+        if total_tok > 0 {
+            total_tok.to_string()
+        } else {
+            "—".to_owned()
+        },
+        if total_cost > 0.0 {
+            format!("${total_cost:.4}")
+        } else {
+            "—".to_owned()
+        },
+    );
+    println!();
+    println!("Use `--run <id>` to scope to a single run.");
+    Ok(())
+}
+
+/// Aggregate delegation events by `provider` field and print a breakdown table.
+///
+/// Rows are sorted by total tokens descending; alpha tiebreak on provider name.
+/// When `run_id` is `Some`, only events from that run are included and the
+/// `runs` column shows `"—"` (distinct-run counting is meaningless for one run).
+pub fn print_providers(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    let events: Vec<&Value> = if let Some(rid) = run_id {
+        all_events
+            .iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events.iter().collect()
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    // Aggregate per provider; track distinct runs via a side-table.
+    let mut rows: HashMap<String, ProviderRow> = HashMap::new();
+    let mut provider_runs: HashMap<String, HashSet<String>> = HashMap::new();
+
+    for ev in &events {
+        let Some(provider) = ev.get("provider").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let rid = ev.get("run_id").and_then(|x| x.as_str()).unwrap_or("");
+        if !rid.is_empty() {
+            provider_runs
+                .entry(provider.to_owned())
+                .or_default()
+                .insert(rid.to_owned());
+        }
+        let entry = rows
+            .entry(provider.to_owned())
+            .or_insert_with(|| ProviderRow {
+                provider: provider.to_owned(),
+                run_count: 0,
+                delegation_count: 0,
+                total_tokens: 0,
+                total_cost_usd: 0.0,
+            });
+        match ev.get("event_type").and_then(|x| x.as_str()) {
+            Some("DelegationStart") => entry.delegation_count += 1,
+            Some("DelegationEnd") => {
+                if let Some(tok) = ev.get("tokens_used").and_then(|x| x.as_u64()) {
+                    entry.total_tokens += tok;
+                }
+                if let Some(cost) = ev.get("cost_usd").and_then(|x| x.as_f64()) {
+                    entry.total_cost_usd += cost;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Fill run counts from the side-table.
+    for (provider, row) in &mut rows {
+        row.run_count = provider_runs.get(provider).map_or(0, |s| s.len());
+    }
+
+    let mut sorted: Vec<ProviderRow> = rows.into_values().collect();
+    sorted.sort_by(|a, b| {
+        b.total_tokens
+            .cmp(&a.total_tokens)
+            .then(a.provider.cmp(&b.provider))
+    });
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!("Provider Breakdown{scope}");
+    println!();
+    println!(
+        "{:>3}  {:<20} {:>5}  {:>11}  {:>10}  {:>10}",
+        "#", "provider", "runs", "delegations", "tokens", "cost"
+    );
+    println!("{}", "─".repeat(68));
+
+    for (i, row) in sorted.iter().enumerate() {
+        let tok = if row.total_tokens > 0 {
+            row.total_tokens.to_string()
+        } else {
+            "—".to_owned()
+        };
+        let cost = if row.total_cost_usd > 0.0 {
+            format!("${:.4}", row.total_cost_usd)
+        } else {
+            "—".to_owned()
+        };
+        let runs_col = if run_id.is_some() {
+            "—".to_owned()
+        } else {
+            row.run_count.to_string()
+        };
+        println!(
+            "{:>3}  {:<20} {:>5}  {:>11}  {:>10}  {:>10}",
+            i + 1,
+            row.provider,
+            runs_col,
+            row.delegation_count,
+            tok,
+            cost,
+        );
+    }
+
+    println!("{}", "─".repeat(68));
+    let total_tok: u64 = sorted.iter().map(|r| r.total_tokens).sum();
+    let total_cost: f64 = sorted.iter().map(|r| r.total_cost_usd).sum();
+    println!(
+        "{:>3}  {:<20} {:>5}  {:>11}  {:>10}  {:>10}",
+        "",
+        "TOTAL",
+        "",
+        sorted.iter().map(|r| r.delegation_count).sum::<usize>(),
+        if total_tok > 0 {
+            total_tok.to_string()
+        } else {
+            "—".to_owned()
+        },
+        if total_cost > 0.0 {
+            format!("${total_cost:.4}")
+        } else {
+            "—".to_owned()
+        },
     );
     println!();
     println!("Use `--run <id>` to scope to a single run.");
@@ -896,7 +1090,9 @@ pub fn print_export(log_path: &Path, run_id: Option<&str>, format: ExportFormat)
             }
         }
         ExportFormat::Csv => {
-            println!("run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp");
+            println!(
+                "run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp"
+            );
             for ev in &events {
                 if ev.get("event_type").and_then(|x| x.as_str()) != Some("DelegationEnd") {
                     continue;
@@ -1006,7 +1202,10 @@ pub fn print_stats(log_path: &Path, run_id: Option<&str>) -> Result<()> {
 
     for s in &stats {
         let ok_pct = if s.end_count > 0 {
-            format!("{:.1}%", 100.0 * s.success_count as f64 / s.end_count as f64)
+            format!(
+                "{:.1}%",
+                100.0 * s.success_count as f64 / s.end_count as f64
+            )
         } else {
             "—".to_owned()
         };
@@ -1208,7 +1407,10 @@ pub fn print_tree(log_path: &Path, run_id: Option<&str>) -> Result<()> {
             Some(false) => "FAIL",
             None => "running",
         };
-        println!("{:<42} {:>8} {:>8} {:>10}  {}", label, dur, tok, cost, status);
+        println!(
+            "{:<42} {:>8} {:>8} {:>10}  {}",
+            label, dur, tok, cost, status
+        );
     }
 
     println!("{}", "─".repeat(78));
@@ -1274,9 +1476,25 @@ mod tests {
     fn collect_runs_aggregates_tokens_and_cost() {
         let events = vec![
             make_start("run-aaa", "main", 0, "2026-01-01T10:00:00Z"),
-            make_end("run-aaa", "main", 0, "2026-01-01T10:00:05Z", 1000, 0.003, true),
+            make_end(
+                "run-aaa",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                1000,
+                0.003,
+                true,
+            ),
             make_start("run-bbb", "main", 0, "2026-01-01T11:00:00Z"),
-            make_end("run-bbb", "main", 0, "2026-01-01T11:00:05Z", 2000, 0.006, true),
+            make_end(
+                "run-bbb",
+                "main",
+                0,
+                "2026-01-01T11:00:05Z",
+                2000,
+                0.006,
+                true,
+            ),
         ];
         let runs = collect_runs(&events);
         assert_eq!(runs.len(), 2);
@@ -1292,20 +1510,44 @@ mod tests {
         let events = vec![
             make_start("run-aaa", "main", 0, "2026-01-01T10:00:00Z"),
             make_start("run-aaa", "sub", 1, "2026-01-01T10:00:01Z"),
-            make_end("run-aaa", "sub", 1, "2026-01-01T10:00:03Z", 500, 0.001, true),
-            make_end("run-aaa", "main", 0, "2026-01-01T10:00:05Z", 1000, 0.003, true),
+            make_end(
+                "run-aaa",
+                "sub",
+                1,
+                "2026-01-01T10:00:03Z",
+                500,
+                0.001,
+                true,
+            ),
+            make_end(
+                "run-aaa",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                1000,
+                0.003,
+                true,
+            ),
         ];
         let runs = collect_runs(&events);
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].delegation_count, 2); // two DelegationStart events
-        assert_eq!(runs[0].total_tokens, 1500);  // 500 + 1000 from DelegationEnd events
+        assert_eq!(runs[0].total_tokens, 1500); // 500 + 1000 from DelegationEnd events
     }
 
     #[test]
     fn build_nodes_matches_start_and_end() {
         let events = vec![
             make_start("run-aaa", "main", 0, "2026-01-01T10:00:00Z"),
-            make_end("run-aaa", "main", 0, "2026-01-01T10:00:05Z", 1234, 0.0037, true),
+            make_end(
+                "run-aaa",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                1234,
+                0.0037,
+                true,
+            ),
         ];
         let nodes = build_nodes(&events);
         assert_eq!(nodes.len(), 1);
@@ -1316,9 +1558,7 @@ mod tests {
 
     #[test]
     fn build_nodes_marks_unmatched_as_in_flight() {
-        let events = vec![
-            make_start("run-aaa", "main", 0, "2026-01-01T10:00:00Z"),
-        ];
+        let events = vec![make_start("run-aaa", "main", 0, "2026-01-01T10:00:00Z")];
         let nodes = build_nodes(&events);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].success, None); // no end event yet
@@ -1352,8 +1592,22 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join("zeroclaw_test_report_runs.jsonl");
         let mut lines = Vec::new();
-        lines.push(serde_json::to_string(&make_start("run-test", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-test", "main", 0, "2026-01-01T10:00:05Z", 500, 0.001, true)).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start("run-test", "main", 0, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-test",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                500,
+                0.001,
+                true,
+            ))
+            .unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_runs(&path);
         let _ = std::fs::remove_file(&path);
@@ -1365,9 +1619,26 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join("zeroclaw_test_report_tree.jsonl");
         let mut lines = Vec::new();
-        lines.push(serde_json::to_string(&make_start("run-recent", "main", 0, "2026-01-02T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-recent", "main", 0, "2026-01-02T10:00:05Z", 800, 0.002, true)).unwrap());
-        lines.push(serde_json::to_string(&make_start("run-old", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start("run-recent", "main", 0, "2026-01-02T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-recent",
+                "main",
+                0,
+                "2026-01-02T10:00:05Z",
+                800,
+                0.002,
+                true,
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-old", "main", 0, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         // print_tree with no run_id should pick run-recent (newest)
         let result = print_tree(&path, None);
@@ -1379,7 +1650,13 @@ mod tests {
     fn print_tree_with_specific_run_id() {
         let dir = std::env::temp_dir();
         let path = dir.join("zeroclaw_test_report_tree_specific.jsonl");
-        let line = serde_json::to_string(&make_start("run-specific", "main", 0, "2026-01-01T10:00:00Z")).unwrap();
+        let line = serde_json::to_string(&make_start(
+            "run-specific",
+            "main",
+            0,
+            "2026-01-01T10:00:00Z",
+        ))
+        .unwrap();
         std::fs::write(&path, line + "\n").unwrap();
         let result = print_tree(&path, Some("run-specific"));
         let _ = std::fs::remove_file(&path);
@@ -1397,11 +1674,27 @@ mod tests {
     fn collect_agent_stats_aggregates_by_agent_name() {
         let events = vec![
             make_start("run-a", "main", 0, "2026-01-01T10:00:00Z"),
-            make_end("run-a", "main", 0, "2026-01-01T10:00:05Z", 1000, 0.003, true),
+            make_end(
+                "run-a",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                1000,
+                0.003,
+                true,
+            ),
             make_start("run-a", "sub", 1, "2026-01-01T10:00:01Z"),
             make_end("run-a", "sub", 1, "2026-01-01T10:00:04Z", 500, 0.001, true),
             make_start("run-a", "main", 0, "2026-01-01T11:00:00Z"),
-            make_end("run-a", "main", 0, "2026-01-01T11:00:05Z", 2000, 0.006, false),
+            make_end(
+                "run-a",
+                "main",
+                0,
+                "2026-01-01T11:00:05Z",
+                2000,
+                0.006,
+                false,
+            ),
         ];
         let stats = collect_agent_stats(&events);
         let main = stats.iter().find(|s| s.agent_name == "main").unwrap();
@@ -1419,7 +1712,15 @@ mod tests {
             make_start("run-a", "main", 0, "2026-01-01T10:00:00Z"),
             make_end("run-a", "main", 0, "2026-01-01T10:00:05Z", 100, 0.001, true),
             make_start("run-a", "main", 0, "2026-01-01T11:00:00Z"),
-            make_end("run-a", "main", 0, "2026-01-01T11:00:05Z", 200, 0.002, false),
+            make_end(
+                "run-a",
+                "main",
+                0,
+                "2026-01-01T11:00:05Z",
+                200,
+                0.002,
+                false,
+            ),
         ];
         let stats = collect_agent_stats(&events);
         let main = stats.iter().find(|s| s.agent_name == "main").unwrap();
@@ -1433,9 +1734,25 @@ mod tests {
     fn collect_agent_stats_sorts_tokens_descending() {
         let events = vec![
             make_start("run-a", "light", 1, "2026-01-01T10:00:00Z"),
-            make_end("run-a", "light", 1, "2026-01-01T10:00:01Z", 100, 0.0001, true),
+            make_end(
+                "run-a",
+                "light",
+                1,
+                "2026-01-01T10:00:01Z",
+                100,
+                0.0001,
+                true,
+            ),
             make_start("run-a", "heavy", 0, "2026-01-01T10:00:00Z"),
-            make_end("run-a", "heavy", 0, "2026-01-01T10:00:05Z", 5000, 0.015, true),
+            make_end(
+                "run-a",
+                "heavy",
+                0,
+                "2026-01-01T10:00:05Z",
+                5000,
+                0.015,
+                true,
+            ),
         ];
         let stats = collect_agent_stats(&events);
         assert_eq!(stats.len(), 2);
@@ -1454,9 +1771,26 @@ mod tests {
     fn print_stats_with_run_filter_excludes_other_runs() {
         let path = std::env::temp_dir().join("zeroclaw_test_stats_filter.jsonl");
         let mut lines = Vec::new();
-        lines.push(serde_json::to_string(&make_start("run-keep", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-keep", "main", 0, "2026-01-01T10:00:05Z", 999, 0.003, true)).unwrap());
-        lines.push(serde_json::to_string(&make_start("run-skip", "other", 0, "2026-01-02T10:00:00Z")).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start("run-keep", "main", 0, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-keep",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                999,
+                0.003,
+                true,
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-skip", "other", 0, "2026-01-02T10:00:00Z"))
+                .unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_stats(&path, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
@@ -1486,10 +1820,36 @@ mod tests {
     fn get_log_summary_aggregates_all_runs() {
         let path = std::env::temp_dir().join("zeroclaw_test_summary_agg.jsonl");
         let mut lines = Vec::new();
-        lines.push(serde_json::to_string(&make_start("run-x", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-x", "main", 0, "2026-01-01T10:00:05Z", 1000, 0.003, true)).unwrap());
-        lines.push(serde_json::to_string(&make_start("run-y", "main", 0, "2026-01-02T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-y", "main", 0, "2026-01-02T10:00:05Z", 2000, 0.006, true)).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start("run-x", "main", 0, "2026-01-01T10:00:00Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-x",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                1000,
+                0.003,
+                true,
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-y", "main", 0, "2026-01-02T10:00:00Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-y",
+                "main",
+                0,
+                "2026-01-02T10:00:05Z",
+                2000,
+                0.006,
+                true,
+            ))
+            .unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let summary = get_log_summary(&path).unwrap().unwrap();
         let _ = std::fs::remove_file(&path);
@@ -1503,12 +1863,20 @@ mod tests {
     fn get_log_summary_latest_run_time_is_most_recent() {
         let path = std::env::temp_dir().join("zeroclaw_test_summary_latest.jsonl");
         let mut lines = Vec::new();
-        lines.push(serde_json::to_string(&make_start("run-old", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_start("run-new", "main", 0, "2026-01-03T10:00:00Z")).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start("run-old", "main", 0, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-new", "main", 0, "2026-01-03T10:00:00Z"))
+                .unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let summary = get_log_summary(&path).unwrap().unwrap();
         let _ = std::fs::remove_file(&path);
-        let ts = summary.latest_run_time.expect("should have latest_run_time");
+        let ts = summary
+            .latest_run_time
+            .expect("should have latest_run_time");
         assert_eq!(ts.format("%Y-%m-%d").to_string(), "2026-01-03");
     }
 
@@ -1539,8 +1907,21 @@ mod tests {
     fn print_export_csv_filters_to_delegation_end_events() {
         let path = std::env::temp_dir().join("zeroclaw_test_export_csv.jsonl");
         let mut lines = Vec::new();
-        lines.push(serde_json::to_string(&make_start("run-e", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-e", "main", 0, "2026-01-01T10:00:05Z", 500, 0.001, true)).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start("run-e", "main", 0, "2026-01-01T10:00:00Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-e",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                500,
+                0.001,
+                true,
+            ))
+            .unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_export(&path, None, ExportFormat::Csv);
         let _ = std::fs::remove_file(&path);
@@ -1551,8 +1932,14 @@ mod tests {
     fn print_export_jsonl_run_filter_excludes_other_runs() {
         let path = std::env::temp_dir().join("zeroclaw_test_export_filter.jsonl");
         let mut lines = Vec::new();
-        lines.push(serde_json::to_string(&make_start("run-keep", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_start("run-skip", "other", 0, "2026-01-02T10:00:00Z")).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start("run-keep", "main", 0, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-skip", "other", 0, "2026-01-02T10:00:00Z"))
+                .unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_export(&path, Some("run-keep"), ExportFormat::Jsonl);
         let _ = std::fs::remove_file(&path);
@@ -1570,10 +1957,38 @@ mod tests {
     fn print_top_sorts_by_tokens_descending() {
         let path = std::env::temp_dir().join("zeroclaw_test_top_tok.jsonl");
         let mut lines = Vec::new();
-        lines.push(serde_json::to_string(&make_start("run-a", "light", 1, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-a", "light", 1, "2026-01-01T10:00:01Z", 100, 0.0001, true)).unwrap());
-        lines.push(serde_json::to_string(&make_start("run-a", "heavy", 0, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-a", "heavy", 0, "2026-01-01T10:00:05Z", 5000, 0.015, true)).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "light", 1, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "light",
+                1,
+                "2026-01-01T10:00:01Z",
+                100,
+                0.0001,
+                true,
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "heavy", 0, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "heavy",
+                0,
+                "2026-01-01T10:00:05Z",
+                5000,
+                0.015,
+                true,
+            ))
+            .unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         assert!(print_top(&path, TopBy::Tokens, 10).is_ok());
         let _ = std::fs::remove_file(&path);
@@ -1583,10 +1998,38 @@ mod tests {
     fn print_top_sorts_by_cost_descending() {
         let path = std::env::temp_dir().join("zeroclaw_test_top_cost.jsonl");
         let mut lines = Vec::new();
-        lines.push(serde_json::to_string(&make_start("run-a", "cheap", 0, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-a", "cheap", 0, "2026-01-01T10:00:01Z", 1000, 0.001, true)).unwrap());
-        lines.push(serde_json::to_string(&make_start("run-a", "pricey", 1, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-a", "pricey", 1, "2026-01-01T10:00:05Z", 500, 0.050, true)).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "cheap", 0, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "cheap",
+                0,
+                "2026-01-01T10:00:01Z",
+                1000,
+                0.001,
+                true,
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "pricey", 1, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "pricey",
+                1,
+                "2026-01-01T10:00:05Z",
+                500,
+                0.050,
+                true,
+            ))
+            .unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         assert!(print_top(&path, TopBy::Cost, 10).is_ok());
         let _ = std::fs::remove_file(&path);
@@ -1598,8 +2041,22 @@ mod tests {
         let mut lines = Vec::new();
         for i in 0..5u64 {
             let agent = format!("agent-{i}");
-            lines.push(serde_json::to_string(&make_start("run-x", &agent, 0, "2026-01-01T10:00:00Z")).unwrap());
-            lines.push(serde_json::to_string(&make_end("run-x", &agent, 0, "2026-01-01T10:00:01Z", i * 100, i as f64 * 0.001, true)).unwrap());
+            lines.push(
+                serde_json::to_string(&make_start("run-x", &agent, 0, "2026-01-01T10:00:00Z"))
+                    .unwrap(),
+            );
+            lines.push(
+                serde_json::to_string(&make_end(
+                    "run-x",
+                    &agent,
+                    0,
+                    "2026-01-01T10:00:01Z",
+                    i * 100,
+                    i as f64 * 0.001,
+                    true,
+                ))
+                .unwrap(),
+            );
         }
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         assert!(print_top(&path, TopBy::Tokens, 2).is_ok());
@@ -1611,10 +2068,36 @@ mod tests {
         let path = std::env::temp_dir().join("zeroclaw_test_top_agg.jsonl");
         let mut lines = Vec::new();
         // "main" appears in two separate runs — totals should be summed
-        lines.push(serde_json::to_string(&make_start("run-1", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-1", "main", 0, "2026-01-01T10:00:05Z", 1000, 0.003, true)).unwrap());
-        lines.push(serde_json::to_string(&make_start("run-2", "main", 0, "2026-01-02T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-2", "main", 0, "2026-01-02T10:00:05Z", 2000, 0.006, true)).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start("run-1", "main", 0, "2026-01-01T10:00:00Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-1",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                1000,
+                0.003,
+                true,
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-2", "main", 0, "2026-01-02T10:00:00Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-2",
+                "main",
+                0,
+                "2026-01-02T10:00:05Z",
+                2000,
+                0.006,
+                true,
+            ))
+            .unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
 
         let events = read_all_events(&path).unwrap();
@@ -1624,12 +2107,22 @@ mod tests {
         let mut rows: HashMap<String, TopAgentRow> = HashMap::new();
         let mut agent_runs_map: HashMap<String, HashSet<String>> = HashMap::new();
         for ev in &events {
-            let Some(name) = ev.get("agent_name").and_then(|x| x.as_str()) else { continue; };
-            let Some(rid) = ev.get("run_id").and_then(|x| x.as_str()) else { continue; };
-            agent_runs_map.entry(name.to_owned()).or_default().insert(rid.to_owned());
+            let Some(name) = ev.get("agent_name").and_then(|x| x.as_str()) else {
+                continue;
+            };
+            let Some(rid) = ev.get("run_id").and_then(|x| x.as_str()) else {
+                continue;
+            };
+            agent_runs_map
+                .entry(name.to_owned())
+                .or_default()
+                .insert(rid.to_owned());
             let entry = rows.entry(name.to_owned()).or_insert_with(|| TopAgentRow {
-                agent_name: name.to_owned(), run_count: 0, delegation_count: 0,
-                total_tokens: 0, total_cost_usd: 0.0,
+                agent_name: name.to_owned(),
+                run_count: 0,
+                delegation_count: 0,
+                total_tokens: 0,
+                total_cost_usd: 0.0,
             });
             match ev.get("event_type").and_then(|x| x.as_str()) {
                 Some("DelegationStart") => entry.delegation_count += 1,
@@ -1645,7 +2138,7 @@ mod tests {
             row.run_count = agent_runs_map.get(name).map_or(0, |s| s.len());
         }
         let main = rows.get("main").unwrap();
-        assert_eq!(main.total_tokens, 3000);  // 1000 + 2000
+        assert_eq!(main.total_tokens, 3000); // 1000 + 2000
         assert_eq!(main.run_count, 2);
         assert_eq!(main.delegation_count, 2);
     }
@@ -1655,10 +2148,21 @@ mod tests {
         let path = std::env::temp_dir().join("zeroclaw_test_top_runs.jsonl");
         let mut lines = Vec::new();
         for run in &["run-p", "run-q", "run-r"] {
-            lines.push(serde_json::to_string(&make_start(run, "shared-agent", 0, "2026-01-01T10:00:00Z")).unwrap());
+            lines.push(
+                serde_json::to_string(&make_start(run, "shared-agent", 0, "2026-01-01T10:00:00Z"))
+                    .unwrap(),
+            );
         }
         // unrelated agent in only one run
-        lines.push(serde_json::to_string(&make_start("run-p", "solo-agent", 1, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start(
+                "run-p",
+                "solo-agent",
+                1,
+                "2026-01-01T10:00:00Z",
+            ))
+            .unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         assert!(print_top(&path, TopBy::Tokens, 10).is_ok());
         let _ = std::fs::remove_file(&path);
@@ -1667,8 +2171,20 @@ mod tests {
     #[test]
     fn resolve_run_id_returns_first_prefix_match() {
         let runs = vec![
-            RunInfo { run_id: "aaa-newer".to_owned(), start_time: None, delegation_count: 0, total_tokens: 0, total_cost_usd: 0.0 },
-            RunInfo { run_id: "bbb-older".to_owned(), start_time: None, delegation_count: 0, total_tokens: 0, total_cost_usd: 0.0 },
+            RunInfo {
+                run_id: "aaa-newer".to_owned(),
+                start_time: None,
+                delegation_count: 0,
+                total_tokens: 0,
+                total_cost_usd: 0.0,
+            },
+            RunInfo {
+                run_id: "bbb-older".to_owned(),
+                start_time: None,
+                delegation_count: 0,
+                total_tokens: 0,
+                total_cost_usd: 0.0,
+            },
         ];
         assert_eq!(resolve_run_id(&runs, "aaa"), Some("aaa-newer"));
         assert_eq!(resolve_run_id(&runs, "bbb"), Some("bbb-older"));
@@ -1678,9 +2194,13 @@ mod tests {
 
     #[test]
     fn resolve_run_id_returns_none_when_no_match() {
-        let runs = vec![
-            RunInfo { run_id: "aaa-1".to_owned(), start_time: None, delegation_count: 0, total_tokens: 0, total_cost_usd: 0.0 },
-        ];
+        let runs = vec![RunInfo {
+            run_id: "aaa-1".to_owned(),
+            start_time: None,
+            delegation_count: 0,
+            total_tokens: 0,
+            total_cost_usd: 0.0,
+        }];
         assert_eq!(resolve_run_id(&runs, "xyz"), None);
     }
 
@@ -1696,10 +2216,38 @@ mod tests {
     fn print_diff_two_runs_succeeds() {
         let path = std::env::temp_dir().join("zeroclaw_test_diff_two.jsonl");
         let mut lines = Vec::new();
-        lines.push(serde_json::to_string(&make_start("run-alpha", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-alpha", "main", 0, "2026-01-01T10:00:05Z", 1000, 0.003, true)).unwrap());
-        lines.push(serde_json::to_string(&make_start("run-beta", "main", 0, "2026-01-02T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-beta", "main", 0, "2026-01-02T10:00:05Z", 2000, 0.006, true)).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start("run-alpha", "main", 0, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-alpha",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                1000,
+                0.003,
+                true,
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-beta", "main", 0, "2026-01-02T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-beta",
+                "main",
+                0,
+                "2026-01-02T10:00:05Z",
+                2000,
+                0.006,
+                true,
+            ))
+            .unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_diff(&path, "run-alpha", Some("run-beta"));
         let _ = std::fs::remove_file(&path);
@@ -1711,10 +2259,38 @@ mod tests {
         let path = std::env::temp_dir().join("zeroclaw_test_diff_default_b.jsonl");
         let mut lines = Vec::new();
         // run-older has earlier timestamp → run-newer will be newest → default run_b
-        lines.push(serde_json::to_string(&make_start("run-older", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-older", "main", 0, "2026-01-01T10:00:05Z", 1000, 0.003, true)).unwrap());
-        lines.push(serde_json::to_string(&make_start("run-newer", "main", 0, "2026-01-02T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-newer", "main", 0, "2026-01-02T10:00:05Z", 2000, 0.006, true)).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start("run-older", "main", 0, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-older",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                1000,
+                0.003,
+                true,
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-newer", "main", 0, "2026-01-02T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-newer",
+                "main",
+                0,
+                "2026-01-02T10:00:05Z",
+                2000,
+                0.006,
+                true,
+            ))
+            .unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_diff(&path, "run-older", None);
         let _ = std::fs::remove_file(&path);
@@ -1724,7 +2300,9 @@ mod tests {
     #[test]
     fn print_diff_unknown_run_returns_error() {
         let path = std::env::temp_dir().join("zeroclaw_test_diff_bad_run.jsonl");
-        let line = serde_json::to_string(&make_start("run-real", "main", 0, "2026-01-01T10:00:00Z")).unwrap();
+        let line =
+            serde_json::to_string(&make_start("run-real", "main", 0, "2026-01-01T10:00:00Z"))
+                .unwrap();
         std::fs::write(&path, line + "\n").unwrap();
         let result = print_diff(&path, "run-nonexistent", None);
         let _ = std::fs::remove_file(&path);
@@ -1741,31 +2319,45 @@ mod tests {
     #[test]
     fn print_prune_fewer_runs_than_keep_is_noop() {
         let path = std::env::temp_dir().join("zeroclaw_test_prune_noop.jsonl");
-        let line = serde_json::to_string(
-            &make_start("run-only", "main", 0, "2026-01-01T10:00:00Z"),
-        )
-        .unwrap();
+        let line =
+            serde_json::to_string(&make_start("run-only", "main", 0, "2026-01-01T10:00:00Z"))
+                .unwrap();
         std::fs::write(&path, line + "\n").unwrap();
         // 1 run stored, --keep 5 → nothing to prune
         assert!(print_prune(&path, 5).is_ok());
         let content = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_file(&path);
-        assert!(content.contains("run-only"), "sole run should be intact after noop");
+        assert!(
+            content.contains("run-only"),
+            "sole run should be intact after noop"
+        );
     }
 
     #[test]
     fn print_prune_removes_oldest_runs() {
         let path = std::env::temp_dir().join("zeroclaw_test_prune_removes.jsonl");
         let mut lines = Vec::new();
-        lines.push(serde_json::to_string(&make_start("run-old", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_start("run-mid", "main", 0, "2026-01-02T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_start("run-new", "main", 0, "2026-01-03T10:00:00Z")).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start("run-old", "main", 0, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-mid", "main", 0, "2026-01-02T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-new", "main", 0, "2026-01-03T10:00:00Z"))
+                .unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         // Keep 2 most recent → run-old should be pruned
         assert!(print_prune(&path, 2).is_ok());
         let content = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_file(&path);
-        assert!(!content.contains("run-old"), "run-old should have been pruned");
+        assert!(
+            !content.contains("run-old"),
+            "run-old should have been pruned"
+        );
         assert!(content.contains("run-mid"), "run-mid should be retained");
         assert!(content.contains("run-new"), "run-new should be retained");
     }
@@ -1774,14 +2366,21 @@ mod tests {
     fn print_prune_keep_zero_empties_log() {
         let path = std::env::temp_dir().join("zeroclaw_test_prune_zero.jsonl");
         let mut lines = Vec::new();
-        lines.push(serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_start("run-b", "main", 0, "2026-01-02T10:00:00Z")).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-b", "main", 0, "2026-01-02T10:00:00Z")).unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         // keep=0 → all runs pruned
         assert!(print_prune(&path, 0).is_ok());
         let content = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_file(&path);
-        assert!(content.trim().is_empty(), "log should be empty after keep=0");
+        assert!(
+            content.trim().is_empty(),
+            "log should be empty after keep=0"
+        );
     }
 
     #[test]
@@ -1789,18 +2388,52 @@ mod tests {
         let path = std::env::temp_dir().join("zeroclaw_test_prune_keeps.jsonl");
         let mut lines = Vec::new();
         // run-old has 2 events; run-new has 2 events. Keep 1 → run-old removed.
-        lines.push(serde_json::to_string(&make_start("run-old", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-old", "main", 0, "2026-01-01T10:00:05Z", 100, 0.001, true)).unwrap());
-        lines.push(serde_json::to_string(&make_start("run-new", "main", 0, "2026-01-02T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-new", "main", 0, "2026-01-02T10:00:05Z", 200, 0.002, true)).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start("run-old", "main", 0, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-old",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                100,
+                0.001,
+                true,
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-new", "main", 0, "2026-01-02T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-new",
+                "main",
+                0,
+                "2026-01-02T10:00:05Z",
+                200,
+                0.002,
+                true,
+            ))
+            .unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         assert!(print_prune(&path, 1).is_ok());
         let remaining = read_all_events(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         // Only the 2 run-new events should remain
-        assert_eq!(remaining.len(), 2, "exactly 2 events for kept run should remain");
+        assert_eq!(
+            remaining.len(),
+            2,
+            "exactly 2 events for kept run should remain"
+        );
         assert!(
-            remaining.iter().all(|e| e.get("run_id").and_then(|x| x.as_str()) == Some("run-new")),
+            remaining
+                .iter()
+                .all(|e| e.get("run_id").and_then(|x| x.as_str()) == Some("run-new")),
             "all remaining events must belong to run-new"
         );
     }
@@ -1809,14 +2442,22 @@ mod tests {
     fn print_prune_exact_keep_equals_run_count_is_noop() {
         let path = std::env::temp_dir().join("zeroclaw_test_prune_exact.jsonl");
         let mut lines = Vec::new();
-        lines.push(serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_start("run-b", "main", 0, "2026-01-02T10:00:00Z")).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-b", "main", 0, "2026-01-02T10:00:00Z")).unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         // Exactly 2 runs, keep=2 → noop, file unchanged
         assert!(print_prune(&path, 2).is_ok());
         let remaining = read_all_events(&path).unwrap();
         let _ = std::fs::remove_file(&path);
-        assert_eq!(remaining.len(), 2, "both events should remain when keep equals run count");
+        assert_eq!(
+            remaining.len(),
+            2,
+            "both events should remain when keep equals run count"
+        );
     }
 
     #[test]
@@ -1838,10 +2479,36 @@ mod tests {
     fn print_models_aggregates_tokens_and_cost_by_model() {
         let path = std::env::temp_dir().join("zeroclaw_test_models_agg.jsonl");
         let mut lines = Vec::new();
-        lines.push(serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-a", "main", 0, "2026-01-01T10:00:05Z", 1000, 0.003, true)).unwrap());
-        lines.push(serde_json::to_string(&make_start("run-a", "sub", 1, "2026-01-01T10:00:01Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-a", "sub", 1, "2026-01-01T10:00:04Z", 500, 0.001, true)).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                1000,
+                0.003,
+                true,
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "sub", 1, "2026-01-01T10:00:01Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "sub",
+                1,
+                "2026-01-01T10:00:04Z",
+                500,
+                0.001,
+                true,
+            ))
+            .unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         // Both events use "claude-sonnet-4" (from make_end fixture)
         let result = print_models(&path, None);
@@ -1855,10 +2522,38 @@ mod tests {
         let mut lines = Vec::new();
         // Two different events — make_end always uses model "claude-sonnet-4",
         // so both rows accumulate into a single model.  Verify Ok.
-        lines.push(serde_json::to_string(&make_start("run-a", "heavy", 0, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-a", "heavy", 0, "2026-01-01T10:00:05Z", 5000, 0.015, true)).unwrap());
-        lines.push(serde_json::to_string(&make_start("run-a", "light", 1, "2026-01-01T10:00:01Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-a", "light", 1, "2026-01-01T10:00:03Z", 100, 0.0001, true)).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "heavy", 0, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "heavy",
+                0,
+                "2026-01-01T10:00:05Z",
+                5000,
+                0.015,
+                true,
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "light", 1, "2026-01-01T10:00:01Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "light",
+                1,
+                "2026-01-01T10:00:03Z",
+                100,
+                0.0001,
+                true,
+            ))
+            .unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         assert!(print_models(&path, None).is_ok());
         let _ = std::fs::remove_file(&path);
@@ -1868,10 +2563,38 @@ mod tests {
     fn print_models_with_run_filter_excludes_other_runs() {
         let path = std::env::temp_dir().join("zeroclaw_test_models_filter.jsonl");
         let mut lines = Vec::new();
-        lines.push(serde_json::to_string(&make_start("run-keep", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-keep", "main", 0, "2026-01-01T10:00:05Z", 800, 0.002, true)).unwrap());
-        lines.push(serde_json::to_string(&make_start("run-skip", "other", 0, "2026-01-02T10:00:00Z")).unwrap());
-        lines.push(serde_json::to_string(&make_end("run-skip", "other", 0, "2026-01-02T10:00:05Z", 9999, 0.030, true)).unwrap());
+        lines.push(
+            serde_json::to_string(&make_start("run-keep", "main", 0, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-keep",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                800,
+                0.002,
+                true,
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-skip", "other", 0, "2026-01-02T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-skip",
+                "other",
+                0,
+                "2026-01-02T10:00:05Z",
+                9999,
+                0.030,
+                true,
+            ))
+            .unwrap(),
+        );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         // Scoped to run-keep — run-skip tokens must not appear in output
         let result = print_models(&path, Some("run-keep"));
@@ -1885,11 +2608,186 @@ mod tests {
         let mut lines = Vec::new();
         // "claude-sonnet-4" appears in two distinct runs
         for run in &["run-p", "run-q"] {
-            lines.push(serde_json::to_string(&make_start(run, "main", 0, "2026-01-01T10:00:00Z")).unwrap());
-            lines.push(serde_json::to_string(&make_end(run, "main", 0, "2026-01-01T10:00:05Z", 500, 0.001, true)).unwrap());
+            lines.push(
+                serde_json::to_string(&make_start(run, "main", 0, "2026-01-01T10:00:00Z")).unwrap(),
+            );
+            lines.push(
+                serde_json::to_string(&make_end(
+                    run,
+                    "main",
+                    0,
+                    "2026-01-01T10:00:05Z",
+                    500,
+                    0.001,
+                    true,
+                ))
+                .unwrap(),
+            );
         }
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         assert!(print_models(&path, None).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_providers_on_missing_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_providers_missing.jsonl");
+        let _ = std::fs::remove_file(&path);
+        assert!(print_providers(&path, None).is_ok());
+    }
+
+    #[test]
+    fn print_providers_on_empty_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_providers_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        assert!(print_providers(&path, None).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_providers_aggregates_tokens_and_cost_by_provider() {
+        let path = std::env::temp_dir().join("zeroclaw_test_providers_agg.jsonl");
+        let mut lines = Vec::new();
+        // Both fixtures use provider "anthropic"; verify aggregation succeeds.
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                1000,
+                0.003,
+                true,
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "sub", 1, "2026-01-01T10:00:01Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "sub",
+                1,
+                "2026-01-01T10:00:04Z",
+                500,
+                0.001,
+                true,
+            ))
+            .unwrap(),
+        );
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_providers(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_providers_sorts_by_tokens_descending() {
+        let path = std::env::temp_dir().join("zeroclaw_test_providers_sort.jsonl");
+        // Two providers: "anthropic" (high tokens) and "openai" (low tokens).
+        let ev_start_a = serde_json::json!({
+            "event_type": "DelegationStart", "run_id": "run-s",
+            "agent_name": "main", "provider": "anthropic",
+            "model": "claude-sonnet-4", "depth": 0, "timestamp": "2026-01-01T10:00:00Z"
+        });
+        let ev_end_a = serde_json::json!({
+            "event_type": "DelegationEnd", "run_id": "run-s",
+            "agent_name": "main", "provider": "anthropic",
+            "model": "claude-sonnet-4", "depth": 0, "duration_ms": 1000u64,
+            "success": true, "tokens_used": 5000u64, "cost_usd": 0.015,
+            "timestamp": "2026-01-01T10:00:05Z"
+        });
+        let ev_start_b = serde_json::json!({
+            "event_type": "DelegationStart", "run_id": "run-s",
+            "agent_name": "helper", "provider": "openai",
+            "model": "gpt-4o", "depth": 1, "timestamp": "2026-01-01T10:00:01Z"
+        });
+        let ev_end_b = serde_json::json!({
+            "event_type": "DelegationEnd", "run_id": "run-s",
+            "agent_name": "helper", "provider": "openai",
+            "model": "gpt-4o", "depth": 1, "duration_ms": 500u64,
+            "success": true, "tokens_used": 100u64, "cost_usd": 0.0001,
+            "timestamp": "2026-01-01T10:00:03Z"
+        });
+        let lines: Vec<String> = [ev_start_a, ev_end_a, ev_start_b, ev_end_b]
+            .iter()
+            .map(|v| serde_json::to_string(v).unwrap())
+            .collect();
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert!(print_providers(&path, None).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_providers_with_run_filter_excludes_other_runs() {
+        let path = std::env::temp_dir().join("zeroclaw_test_providers_filter.jsonl");
+        let mut lines = Vec::new();
+        lines.push(
+            serde_json::to_string(&make_start("run-keep", "main", 0, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-keep",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                800,
+                0.002,
+                true,
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-skip", "other", 0, "2026-01-02T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-skip",
+                "other",
+                0,
+                "2026-01-02T10:00:05Z",
+                9999,
+                0.030,
+                true,
+            ))
+            .unwrap(),
+        );
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_providers(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_providers_counts_distinct_runs_per_provider() {
+        let path = std::env::temp_dir().join("zeroclaw_test_providers_runs.jsonl");
+        let mut lines = Vec::new();
+        // "anthropic" appears in two distinct runs
+        for run in &["run-x", "run-y"] {
+            lines.push(
+                serde_json::to_string(&make_start(run, "main", 0, "2026-01-01T10:00:00Z")).unwrap(),
+            );
+            lines.push(
+                serde_json::to_string(&make_end(
+                    run,
+                    "main",
+                    0,
+                    "2026-01-01T10:00:05Z",
+                    500,
+                    0.001,
+                    true,
+                ))
+                .unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert!(print_providers(&path, None).is_ok());
         let _ = std::fs::remove_file(&path);
     }
 }
