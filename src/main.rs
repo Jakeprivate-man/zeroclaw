@@ -402,7 +402,9 @@ Examples:
   zeroclaw delegations top           # global leaderboard by tokens (top 10)
   zeroclaw delegations top --by cost --limit 5  # top 5 by cost
   zeroclaw delegations prune         # keep 20 most recent runs, remove the rest
-  zeroclaw delegations prune --keep 5  # keep only 5 most recent runs")]
+  zeroclaw delegations prune --keep 5  # keep only 5 most recent runs
+  zeroclaw delegations models        # model breakdown: tokens and cost per model
+  zeroclaw delegations models --run <id>  # model breakdown for one run")]
     Delegations {
         #[command(subcommand)]
         delegation_command: Option<DelegationCommands>,
@@ -488,6 +490,23 @@ Examples:
         /// Number of most-recent runs to keep (older runs are removed)
         #[arg(long, default_value_t = 20)]
         keep: usize,
+    },
+    /// Show per-model token and cost breakdown (all runs or one run)
+    #[command(long_about = "\
+Aggregate delegation events by model and print a breakdown table.
+
+Rows are sorted by cumulative tokens descending.  Use `--run` to scope
+to a single process invocation; omit it to aggregate across all runs.
+
+Output columns: # | model | runs | delegations | tokens | cost
+
+Examples:
+  zeroclaw delegations models              # all runs, sorted by tokens
+  zeroclaw delegations models --run <id>  # scope to one run")]
+    Models {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
     },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
@@ -1155,6 +1174,9 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::Prune { keep }) => {
                     observability::delegation_report::print_prune(&log_path, keep)
+                }
+                Some(DelegationCommands::Models { run }) => {
+                    observability::delegation_report::print_models(&log_path, run.as_deref())
                 }
                 Some(DelegationCommands::Diff { run_a, run_b }) => {
                     observability::delegation_report::print_diff(
