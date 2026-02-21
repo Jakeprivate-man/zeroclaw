@@ -403,6 +403,110 @@ def render_log_health() -> None:
             )
 
 
+def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
+    """Horizontal bar chart — cumulative tokens broken down by agent name.
+
+    When ``run_id`` is given the chart is scoped to that single run;
+    otherwise it aggregates across all stored runs.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` means all runs.
+    """
+    scope = f"[{run_id[:8]}…]" if run_id is not None else "(all runs)"
+    st.markdown(f"#### Tokens by Agent {scope}")
+    parser = DelegationParser()
+    nodes = _collect_all_nodes(parser, run_id)
+
+    agent_tokens: dict = {}
+    for node in nodes:
+        if node.tokens_used is not None:
+            agent_tokens[node.agent_name] = (
+                agent_tokens.get(node.agent_name, 0) + node.tokens_used
+            )
+
+    if not agent_tokens:
+        st.caption("No token data available — showing mock example")
+        agent_tokens = {
+            "main": 4200,
+            "research": 2800,
+            "codebase_analyzer": 1100,
+            "doc_analyzer": 900,
+        }
+
+    sorted_agents = sorted(agent_tokens.items(), key=lambda x: x[1])
+    agents = [a for a, _ in sorted_agents]
+    tokens = [t for _, t in sorted_agents]
+
+    fig = go.Figure(
+        go.Bar(
+            x=tokens,
+            y=agents,
+            orientation="h",
+            marker_color=_GREEN_PRIMARY,
+            hovertemplate="%{y}<br>Tokens: %{x:,}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        **_PLOTLY_LAYOUT,
+        title="Token Usage by Agent",
+        xaxis_title="Total Tokens",
+        yaxis_title="Agent",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_cost_by_agent(run_id: Optional[str] = None) -> None:
+    """Horizontal bar chart — cumulative cost broken down by agent name.
+
+    When ``run_id`` is given the chart is scoped to that single run;
+    otherwise it aggregates across all stored runs.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` means all runs.
+    """
+    scope = f"[{run_id[:8]}…]" if run_id is not None else "(all runs)"
+    st.markdown(f"#### Cost by Agent {scope}")
+    parser = DelegationParser()
+    nodes = _collect_all_nodes(parser, run_id)
+
+    agent_cost: dict = {}
+    for node in nodes:
+        if node.cost_usd is not None:
+            agent_cost[node.agent_name] = (
+                agent_cost.get(node.agent_name, 0.0) + node.cost_usd
+            )
+
+    if not agent_cost:
+        st.caption("No cost data available — showing mock example")
+        agent_cost = {
+            "main": 0.0126,
+            "research": 0.0084,
+            "codebase_analyzer": 0.0033,
+            "doc_analyzer": 0.0027,
+        }
+
+    sorted_agents = sorted(agent_cost.items(), key=lambda x: x[1])
+    agents = [a for a, _ in sorted_agents]
+    costs = [round(c, 6) for _, c in sorted_agents]
+
+    fig = go.Figure(
+        go.Bar(
+            x=costs,
+            y=agents,
+            orientation="h",
+            marker_color=_GREEN_LIGHT,
+            hovertemplate="%{y}<br>Cost: $%{x:.4f}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        **_PLOTLY_LAYOUT,
+        title="Cost by Agent (USD)",
+        xaxis_title="Total Cost (USD)",
+        yaxis_title="Agent",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
 def render_run_selector() -> Optional[str]:
     """Shared run selector — returns the chosen run_id or None for 'All runs'.
 
