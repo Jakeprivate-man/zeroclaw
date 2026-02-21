@@ -1,0 +1,189 @@
+================================================================================
+ZEROCLAW AGENT RUNTIME - INVESTIGATION SUMMARY
+================================================================================
+Date: 2026-02-21
+Status: COMPLETE
+
+DELIVERABLES CREATED:
+1. ZEROCLAW_ARCHITECTURE_INVESTIGATION.md (38KB, 1121 lines)
+   - Complete architecture map
+   - All system components explained
+   - Integration gaps identified
+   - UI requirements prioritized
+
+================================================================================
+KEY FINDINGS
+================================================================================
+
+1. RESEARCH TOKENS
+   - NO discrete "research token" concept exists
+   - Instead: Comprehensive TokenUsage tracking system
+   - Tracks: input_tokens, output_tokens, total_tokens, cost_usd per request
+   - Storage: JSONL format (~/.zeroclaw/state/costs.jsonl)
+   - Cost calculation: Per-model USD pricing (hardcoded for 100+ models)
+   - Budget enforcement: Daily/monthly limits with warning thresholds
+
+2. AGENT ARCHITECTURE
+   - Trait-driven modular design
+   - Multi-agent support via DelegateTool
+   - Delegation features:
+     * Sub-agent specialization (different models/providers)
+     * Depth limiting (prevents infinite loops)
+     * Tool inheritance (safe subset for sub-agents)
+     * Timeout enforcement (120-300s per sub-agent call)
+     * Cost rollup (sub-agent costs aggregate to parent)
+
+3. GATEWAY API
+   - Built on Axum (Rust async web framework)
+   - Current endpoints: /health, /metrics, /pair, /webhook, /whatsapp, /linq
+   - Security: Rate limiting, pairing, idempotency, secret hashing
+   - Missing endpoints: /api/cost-summary, /api/agents, /api/tools, /api/memory
+
+4. OBSERVABILITY
+   - Multiple backends: Prometheus, OpenTelemetry, Log, Verbose
+   - Real-time metrics: request count, token usage, latency, errors
+   - Accessible via /metrics endpoint (Prometheus text format)
+
+5. TOOL SYSTEM
+   - 30+ executable tools available
+   - Categories: system, file, memory, information, scheduling, hardware, integrations
+   - Security model: Per-agent tool access control
+
+6. MEMORY SYSTEM
+   - 5 backends: SQLite (default), Markdown, Embeddings, Postgres, None
+   - Categories: Core, Daily, Conversation, Custom
+   - Features: FTS, semantic search (with embeddings), session scoping
+
+7. PROVIDERS
+   - 13 implementations: Anthropic, OpenAI, Gemini, Ollama, Bedrock, etc.
+   - 100+ supported models
+   - Config-driven model routing with hints
+
+================================================================================
+CRITICAL UI GAPS (10 items)
+================================================================================
+
+Phase 1 - MUST HAVE:
+1. Cost tracking display (session/daily/monthly USD)
+2. Token usage monitoring (input/output per request)
+3. Budget status display (% of limit remaining)
+4. Budget enforcement UI (warn/block at thresholds)
+5. Agent status monitor (current agent, available agents)
+
+Phase 2 - IMPORTANT:
+6. Tool execution history (searchable, filterable)
+7. Model/provider selector (quick-switch UI)
+8. Agent orchestration visualizer (delegation tree)
+9. Memory recall interface (search + recall)
+10. Webhook test interface + pairing management
+
+Phase 3 - NICE-TO-HAVE:
+- Memory store/forget UI
+- Cost trend analytics
+- Multi-agent workflow visualization
+- Advanced metrics dashboard
+
+================================================================================
+NEW GATEWAY API ENDPOINTS NEEDED
+================================================================================
+
+Cost Tracking:
+  GET /api/cost-summary
+  GET /api/budget-check
+
+Agent Management:
+  GET /api/agents
+  GET /api/agents/{name}
+
+Tool Execution:
+  GET /api/tool-executions?limit=100&offset=0
+
+Memory Operations:
+  GET /api/memory?category=core&limit=10
+  POST /api/memory
+  DELETE /api/memory/{key}
+  POST /api/memory/recall
+
+Model/Provider:
+  GET /api/models
+
+Gateway Configuration:
+  GET /api/gateway/pairing-status
+  GET /api/gateway/config
+
+================================================================================
+IMPLEMENTATION PRIORITY
+================================================================================
+
+PRIORITY 1 (Next Sprint):
+- Add /api/cost-summary endpoint (read from CostTracker)
+- Add /api/budget-check endpoint (query budget status)
+- Create Cost Dashboard page in Streamlit
+- Create Token Monitor component
+- Update API client to use new endpoints
+
+PRIORITY 2:
+- Implement agent status monitoring
+- Add tool execution history tracking
+- Create model/provider selector
+
+PRIORITY 3:
+- Memory interface components
+- Advanced analytics
+- Multi-agent visualization
+
+================================================================================
+DATA SOURCES AVAILABLE
+================================================================================
+
+Real Data:
+✓ /health - Health status, component info
+✓ /metrics - Prometheus metrics (requires parsing)
+✓ ~/.zeroclaw/state/costs.jsonl - Cost records (JSONL format)
+✓ Agent runtime state - In-memory (via new API endpoints)
+
+Mock Data:
+✓ Mock data generator already exists in codebase
+
+================================================================================
+ARCHITECTURE FILES TO REVIEW
+================================================================================
+
+Core Agent:
+  /Users/jakeprivate/zeroclaw/src/agent/agent.rs
+  /Users/jakeprivate/zeroclaw/src/agent/loop_.rs
+  /Users/jakeprivate/zeroclaw/src/agent/dispatcher.rs
+
+Cost Tracking:
+  /Users/jakeprivate/zeroclaw/src/cost/types.rs
+  /Users/jakeprivate/zeroclaw/src/cost/tracker.rs
+
+Gateway:
+  /Users/jakeprivate/zeroclaw/src/gateway/mod.rs
+
+Multi-Agent:
+  /Users/jakeprivate/zeroclaw/src/tools/delegate.rs
+  /Users/jakeprivate/zeroclaw/src/config/schema.rs (DelegateAgentConfig)
+
+Observability:
+  /Users/jakeprivate/zeroclaw/src/observability/mod.rs
+  /Users/jakeprivate/zeroclaw/src/observability/prometheus.rs
+
+Memory:
+  /Users/jakeprivate/zeroclaw/src/memory/traits.rs
+
+Config:
+  /Users/jakeprivate/zeroclaw/src/config/schema.rs (1500+ lines, comprehensive)
+
+================================================================================
+NEXT STEPS
+================================================================================
+
+1. Review ZEROCLAW_ARCHITECTURE_INVESTIGATION.md (full details)
+2. Prioritize Phase 1 features for implementation
+3. Create gateway API extension for /api/cost-summary and /api/budget-check
+4. Extend Streamlit API client with new endpoints
+5. Implement Cost Dashboard component
+6. Test end-to-end with real ZeroClaw instance
+
+================================================================================
