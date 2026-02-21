@@ -211,6 +211,14 @@ def render() -> None:
         with chart_col4:
             delegation_charts.render_success_rate_by_depth()
 
+        # Agent breakdown charts (scoped to selected run when set)
+        st.markdown("#### Agent Breakdown")
+        agent_col1, agent_col2 = st.columns(2)
+        with agent_col1:
+            delegation_charts.render_tokens_by_agent(run_id=selected_run_id)
+        with agent_col2:
+            delegation_charts.render_cost_by_agent(run_id=selected_run_id)
+
         # Timeline waterfall (scoped to selected run)
         delegation_charts.render_timeline(run_id=selected_run_id)
 
@@ -255,6 +263,9 @@ def render() -> None:
 
             - **Cross-run charts** — cost per run, token breakdown by model, depth
               distribution, and success/failure rates across all historical runs
+            - **Agent Breakdown** — tokens and cost per agent name, scoped to the
+              selected run when a specific run is chosen in the shared run selector;
+              shows aggregate across all runs when "All runs" is selected
             - **Log Health** — collapsible panel showing file size, run count,
               time range, and cumulative token/cost totals across all stored runs;
               useful for verifying the rotation limit (max 100 runs by default)
