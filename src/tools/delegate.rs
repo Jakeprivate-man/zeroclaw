@@ -6,6 +6,7 @@ use crate::providers::{self, ChatMessage, Provider};
 use crate::security::policy::ToolOperation;
 use crate::security::SecurityPolicy;
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -406,12 +407,16 @@ impl DelegateTool {
         }
         history.push(ChatMessage::user(full_prompt.to_string()));
 
-        // Use ForwardingObserver if parent observer is available, otherwise NoopObserver
+        // Shared cell to capture token/cost data from the child's AgentEnd event.
+        // CapturingObserver writes here; we read after the child finishes.
+        let captured: Arc<Mutex<Option<(u64, f64)>>> = Arc::new(Mutex::new(None));
+
+        // Use CapturingObserver (wraps ForwardingObserver) when a parent observer is
+        // available, so child events are both forwarded and captured for DelegationEnd.
         let observer: Box<dyn Observer> = if let Some(parent) = &self.parent_observer {
-            Box::new(ForwardingObserver::new(
-                parent.clone(),
-                agent_name.to_string(),
-                self.depth + 1,
+            Box::new(CapturingObserver::new(
+                ForwardingObserver::new(parent.clone(), agent_name.to_string(), self.depth + 1),
+                captured.clone(),
             ))
         } else {
             Box::new(NoopObserver)
@@ -483,6 +488,12 @@ impl DelegateTool {
             }),
         };
 
+        // Read captured token/cost data from the child's AgentEnd event.
+        let (tokens_used, cost_usd) = match *captured.lock() {
+            Some((t, c)) => (Some(t), Some(c)),
+            None => (None, None),
+        };
+
         // Emit DelegationEnd event
         if let Some(parent) = &self.parent_observer {
             parent.record_event(&ObserverEvent::DelegationEnd {
@@ -493,6 +504,8 @@ impl DelegateTool {
                 duration,
                 success: tool_result.as_ref().map(|r| r.success).unwrap_or(false),
                 error_message: tool_result.as_ref().ok().and_then(|r| r.error.clone()),
+                tokens_used,
+                cost_usd,
             });
         }
 
@@ -565,6 +578,54 @@ impl Observer for ForwardingObserver {
 
     fn name(&self) -> &str {
         "forwarding"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Observer that intercepts `AgentEnd` events from a child agent to capture
+/// token usage and cost, while forwarding all events to an inner observer.
+///
+/// A shared `Arc<Mutex<Option<(tokens, cost)>>>` is written once when the
+/// child's `AgentEnd` event arrives. The caller reads it after the child run
+/// completes to include token/cost data in the `DelegationEnd` event.
+struct CapturingObserver {
+    inner: ForwardingObserver,
+    captured: Arc<Mutex<Option<(u64, f64)>>>,
+}
+
+impl CapturingObserver {
+    fn new(inner: ForwardingObserver, captured: Arc<Mutex<Option<(u64, f64)>>>) -> Self {
+        Self { inner, captured }
+    }
+}
+
+impl Observer for CapturingObserver {
+    fn record_event(&self, event: &ObserverEvent) {
+        // Capture token/cost from the child's AgentEnd (first occurrence wins)
+        if let ObserverEvent::AgentEnd {
+            tokens_used: Some(tokens),
+            cost_usd: Some(cost),
+            ..
+        } = event
+        {
+            let mut guard = self.captured.lock();
+            if guard.is_none() {
+                *guard = Some((*tokens, *cost));
+            }
+        }
+        // Always forward to parent
+        self.inner.record_event(event);
+    }
+
+    fn record_metric(&self, metric: &ObserverMetric) {
+        self.inner.record_metric(metric);
+    }
+
+    fn name(&self) -> &str {
+        "capturing"
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

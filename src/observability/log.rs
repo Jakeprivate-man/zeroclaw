@@ -103,6 +103,8 @@ impl Observer for LogObserver {
                 duration,
                 success,
                 error_message,
+                tokens_used,
+                cost_usd,
             } => {
                 let ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
                 info!(
@@ -113,6 +115,8 @@ impl Observer for LogObserver {
                     duration_ms = ms,
                     success = success,
                     error = ?error_message,
+                    tokens_used = ?tokens_used,
+                    cost_usd = ?cost_usd,
                     "delegation.end"
                 );
             }

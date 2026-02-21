@@ -214,6 +214,8 @@ impl Observer for PrometheusObserver {
                 duration: _,
                 success: _,
                 error_message: _,
+                tokens_used: _,
+                cost_usd: _,
             } => {
                 // Delegation metrics could be added here in the future
                 // For now, delegation visibility is primarily through log/otel observers

@@ -108,6 +108,8 @@ impl Observer for DelegationEventObserver {
                 duration,
                 success,
                 error_message,
+                tokens_used,
+                cost_usd,
             } => {
                 let json = serde_json::json!({
                     "event_type": "DelegationEnd",
@@ -119,6 +121,8 @@ impl Observer for DelegationEventObserver {
                     "duration_ms": duration.as_millis() as u64,
                     "success": success,
                     "error_message": error_message,
+                    "tokens_used": tokens_used,
+                    "cost_usd": cost_usd,
                     "timestamp": chrono::Utc::now().to_rfc3339(),
                 });
                 self.write_json(&json);
@@ -187,6 +191,8 @@ mod tests {
             duration: Duration::from_millis(100),
             success: true,
             error_message: None,
+            tokens_used: None,
+            cost_usd: None,
         });
 
         let content = std::fs::read_to_string(temp_file.path()).unwrap();
@@ -248,6 +254,8 @@ mod tests {
             duration: Duration::from_millis(4512),
             success: true,
             error_message: None,
+            tokens_used: Some(1234),
+            cost_usd: Some(0.0042),
         });
 
         let content = std::fs::read_to_string(temp_file.path()).unwrap();
@@ -255,6 +263,52 @@ mod tests {
         assert!(content.contains("\"duration_ms\":4512"));
         assert!(content.contains("\"success\":true"));
         assert!(content.contains(&format!("\"run_id\":\"{}\"", expected_run_id)));
+    }
+
+    #[test]
+    fn writes_tokens_and_cost_in_delegation_end() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let observer = DelegationEventObserver::new(temp_file.path().to_path_buf());
+
+        observer.record_event(&ObserverEvent::DelegationEnd {
+            agent_name: "worker".into(),
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4".into(),
+            depth: 1,
+            duration: Duration::from_millis(200),
+            success: true,
+            error_message: None,
+            tokens_used: Some(500),
+            cost_usd: Some(0.0015),
+        });
+
+        let content = std::fs::read_to_string(temp_file.path()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(parsed["tokens_used"], 500);
+        assert!((parsed["cost_usd"].as_f64().unwrap() - 0.0015).abs() < 1e-9);
+    }
+
+    #[test]
+    fn writes_null_tokens_and_cost_when_absent() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let observer = DelegationEventObserver::new(temp_file.path().to_path_buf());
+
+        observer.record_event(&ObserverEvent::DelegationEnd {
+            agent_name: "worker".into(),
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4".into(),
+            depth: 1,
+            duration: Duration::from_millis(50),
+            success: false,
+            error_message: Some("timeout".into()),
+            tokens_used: None,
+            cost_usd: None,
+        });
+
+        let content = std::fs::read_to_string(temp_file.path()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert!(parsed["tokens_used"].is_null());
+        assert!(parsed["cost_usd"].is_null());
     }
 
     #[test]
@@ -289,6 +343,8 @@ mod tests {
             duration: Duration::from_millis(100),
             success: true,
             error_message: None,
+            tokens_used: None,
+            cost_usd: None,
         });
 
         let content = std::fs::read_to_string(temp_file.path()).unwrap();

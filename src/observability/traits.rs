@@ -98,6 +98,15 @@ pub enum ObserverEvent {
         success: bool,
         /// Error message if delegation failed.
         error_message: Option<String>,
+        /// Total tokens consumed by the sub-agent during this delegation.
+        ///
+        /// `None` when the provider did not report usage (e.g. streaming
+        /// without aggregation, or provider does not expose token counts).
+        tokens_used: Option<u64>,
+        /// Estimated cost in USD for this delegation.
+        ///
+        /// `None` when no cost data is available from the provider.
+        cost_usd: Option<f64>,
     },
 }
 

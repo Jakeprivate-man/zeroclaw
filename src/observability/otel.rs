@@ -357,6 +357,8 @@ impl Observer for OtelObserver {
                 duration,
                 success,
                 error_message: _,
+                tokens_used,
+                cost_usd,
             } => {
                 let secs = duration.as_secs_f64();
                 let start_time = SystemTime::now()
@@ -369,18 +371,26 @@ impl Observer for OtelObserver {
                     Status::error("")
                 };
 
+                let mut attrs = vec![
+                    KeyValue::new("agent_name", agent_name.clone()),
+                    KeyValue::new("provider", provider.clone()),
+                    KeyValue::new("model", model.clone()),
+                    KeyValue::new("depth", *depth as i64),
+                    KeyValue::new("success", *success),
+                    KeyValue::new("duration_s", secs),
+                ];
+                if let Some(t) = tokens_used {
+                    attrs.push(KeyValue::new("tokens_used", *t as i64));
+                }
+                if let Some(c) = cost_usd {
+                    attrs.push(KeyValue::new("cost_usd", *c));
+                }
+
                 let mut span = tracer.build(
                     opentelemetry::trace::SpanBuilder::from_name("delegation")
                         .with_kind(SpanKind::Internal)
                         .with_start_time(start_time)
-                        .with_attributes(vec![
-                            KeyValue::new("agent_name", agent_name.clone()),
-                            KeyValue::new("provider", provider.clone()),
-                            KeyValue::new("model", model.clone()),
-                            KeyValue::new("depth", *depth as i64),
-                            KeyValue::new("success", *success),
-                            KeyValue::new("duration_s", secs),
-                        ]),
+                        .with_attributes(attrs),
                 );
                 span.set_status(status);
                 span.end();
