@@ -5,6 +5,9 @@ charts organized into tabs for different analytical perspectives (Overview, Perf
 Errors, Usage). Uses Matrix Green theme throughout.
 """
 
+import time
+from datetime import datetime
+
 import streamlit as st
 from components import analytics
 from components.analytics import delegation_charts
@@ -150,6 +153,39 @@ def render() -> None:
         st.markdown("### Agent Delegations")
         st.caption("Visualize nested agent delegation hierarchies and cross-run cost/token analytics")
 
+        # ── Live-mode controls ─────────────────────────────────────────────
+        live_col1, live_col2, live_col3 = st.columns([2, 2, 3])
+        with live_col1:
+            live_mode = st.checkbox(
+                "Live mode",
+                value=False,
+                key="delegation_live_mode",
+                help="Automatically re-read the JSONL log and refresh all charts "
+                     "at the selected interval. Useful when ZeroClaw is actively running.",
+            )
+        with live_col2:
+            if live_mode:
+                refresh_interval = st.selectbox(
+                    "Refresh every",
+                    options=[3, 5, 10, 30],
+                    index=1,  # default 5 s
+                    format_func=lambda x: f"{x}s",
+                    key="delegation_refresh_interval",
+                )
+            else:
+                refresh_interval = 5
+                if st.button("↻ Refresh", key="delegation_refresh_btn",
+                             help="Re-read delegation log now"):
+                    st.rerun()
+        with live_col3:
+            last_refresh = st.session_state.get("delegation_last_refresh")
+            if live_mode and last_refresh:
+                st.caption(f"Last refreshed: {last_refresh}")
+            elif not live_mode:
+                st.caption("Enable live mode to auto-refresh while ZeroClaw runs")
+
+        st.divider()
+
         # Delegation summary metrics
         delegation_tree.render_delegation_summary()
 
@@ -177,6 +213,18 @@ def render() -> None:
         # Delegation tree visualization (real data from JSONL)
         delegation_tree.render_delegation_tree(use_mock_data=False)
 
+        # Live mode: record render time, sleep, then rerun
+        if live_mode:
+            st.session_state["delegation_last_refresh"] = (
+                datetime.now().strftime("%H:%M:%S")
+            )
+            st.caption(
+                f"Live mode active — refreshing in {refresh_interval}s "
+                f"(disable to stop)"
+            )
+            time.sleep(refresh_interval)
+            st.rerun()
+
         # Instructions for delegation tracking
         with st.expander("ℹ️ About Delegation Tracking"):
             st.markdown("""
@@ -196,6 +244,9 @@ def render() -> None:
 
             - **Cross-run charts** — cost per run, token breakdown by model, depth
               distribution, and success/failure rates across all historical runs
+            - **Live mode** — auto-refresh toggle (3 / 5 / 10 / 30s intervals)
+              that re-reads the JSONL log and rerenders all charts; use while
+              ZeroClaw is actively running to watch delegations appear in real time
             - **Timeline waterfall** — Gantt-style chart showing each delegation
               as a horizontal bar positioned by actual start/end timestamps;
               makes concurrency and relative duration immediately visible
