@@ -7,6 +7,7 @@ Errors, Usage). Uses Matrix Green theme throughout.
 
 import streamlit as st
 from components import analytics
+from components.dashboard import delegation_tree
 from lib.session_state import get_state, set_state
 
 
@@ -83,11 +84,12 @@ def render() -> None:
     st.divider()
 
     # Tabbed chart views
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "Overview",
         "Performance",
         "Errors",
-        "Usage"
+        "Usage",
+        "Delegations"
     ])
 
     # Overview Tab: Request patterns and distribution
@@ -141,6 +143,45 @@ def render() -> None:
 
         with col2:
             analytics.feature_usage_chart()
+
+    # Delegations Tab: Agent delegation tree visualization
+    with tab5:
+        st.markdown("### Agent Delegations")
+        st.caption("Visualize nested agent delegation hierarchies and execution status")
+
+        # Delegation summary metrics
+        delegation_tree.render_delegation_summary()
+
+        st.divider()
+
+        # Delegation tree visualization
+        delegation_tree.render_delegation_tree(use_mock_data=True)
+
+        # Instructions for real data
+        with st.expander("ℹ️ How to View Real Delegation Data"):
+            st.markdown("""
+            **Real delegation events will automatically appear here once:**
+
+            1. ✅ **Backend is running** - ZeroClaw Rust backend must be running
+            2. ✅ **Agents are configured** - At least one sub-agent configured in `config.toml`
+            3. ✅ **Delegation occurs** - Parent agent delegates work to a sub-agent
+            4. ✅ **Events are logged** - Observer writes delegation events to logs
+
+            **To enable delegation event logging:**
+
+            Currently showing mock data. To see real delegations, you need to add a
+            `DelegationEventObserver` to the Rust backend that writes delegation events
+            to `~/.zeroclaw/state/delegation.jsonl`.
+
+            Once configured, this component will automatically read and display the
+            actual delegation tree from your running agents.
+
+            **Example delegation.jsonl format:**
+            ```json
+            {"event_type":"DelegationStart","agent_name":"research","provider":"anthropic","model":"claude-sonnet-4","depth":1,"agentic":true,"timestamp":"2026-02-21T10:30:45Z"}
+            {"event_type":"DelegationEnd","agent_name":"research","provider":"anthropic","model":"claude-sonnet-4","depth":1,"duration_ms":4512,"success":true,"timestamp":"2026-02-21T10:30:50Z"}
+            ```
+            """)
 
 
 # Entry point for Streamlit multi-page app
