@@ -602,6 +602,95 @@ def render_agent_stats_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_model_stats_table(run_id: Optional[str] = None) -> None:
+    """Sortable per-model statistics table.
+
+    Mirrors ``zeroclaw delegations models [--run <id>]`` as an interactive
+    Streamlit dataframe. When ``run_id`` is set the table is scoped to that
+    run; otherwise it aggregates all stored runs.
+
+    Columns: Model | Delegations | Ended | Success % | Total Tokens | Total Cost ($)
+
+    Falls back to a synthetic mock example when no log data is present.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` aggregates all runs.
+    """
+    import pandas as pd
+
+    scope = f"[{run_id[:8]}…]" if run_id is not None else "(all runs)"
+    st.markdown(f"#### Model Stats {scope}")
+
+    parser = DelegationParser()
+    nodes = _collect_all_nodes(parser, run_id)
+
+    if not nodes:
+        st.caption("No delegation data available — showing mock example")
+        rows = [
+            {"Model": "claude-sonnet-4", "Delegations": 4, "Ended": 4,
+             "Success %": 100.0, "Total Tokens": 5200, "Total Cost ($)": 0.0184},
+            {"Model": "claude-haiku-4", "Delegations": 2, "Ended": 2,
+             "Success %": 100.0, "Total Tokens": 1240, "Total Cost ($)": 0.0022},
+        ]
+        df = pd.DataFrame(rows)
+    else:
+        agg: dict = {}
+        for node in nodes:
+            model = node.model or "?"
+            if model not in agg:
+                agg[model] = {
+                    "delegation_count": 0,
+                    "end_count": 0,
+                    "success_count": 0,
+                    "total_tokens": 0,
+                    "total_cost": 0.0,
+                }
+            s = agg[model]
+            s["delegation_count"] += 1
+            if node.is_complete:
+                s["end_count"] += 1
+                if node.success:
+                    s["success_count"] += 1
+            if node.tokens_used is not None:
+                s["total_tokens"] += node.tokens_used
+            if node.cost_usd is not None:
+                s["total_cost"] += node.cost_usd
+
+        rows = []
+        for model, s in agg.items():
+            success_pct = (
+                round(100.0 * s["success_count"] / s["end_count"], 1)
+                if s["end_count"] > 0
+                else None
+            )
+            rows.append({
+                "Model": model,
+                "Delegations": s["delegation_count"],
+                "Ended": s["end_count"],
+                "Success %": success_pct,
+                "Total Tokens": s["total_tokens"],
+                "Total Cost ($)": round(s["total_cost"], 6),
+            })
+
+        # Sort by Total Tokens descending
+        rows.sort(key=lambda r: r["Total Tokens"], reverse=True)
+        df = pd.DataFrame(rows)
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Model": st.column_config.TextColumn("Model", width="medium"),
+            "Delegations": st.column_config.NumberColumn("Delegations", format="%d"),
+            "Ended": st.column_config.NumberColumn("Ended", format="%d"),
+            "Success %": st.column_config.NumberColumn("Success %", format="%.1f%%"),
+            "Total Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+            "Total Cost ($)": st.column_config.NumberColumn("Cost ($)", format="$%.4f"),
+        },
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
