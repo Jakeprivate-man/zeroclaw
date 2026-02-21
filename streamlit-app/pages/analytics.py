@@ -222,6 +222,9 @@ def render() -> None:
         # Per-agent stats table (scoped to selected run when set)
         delegation_charts.render_agent_stats_table(run_id=selected_run_id)
 
+        # Export buttons (CSV + JSONL, scoped to selected run when set)
+        delegation_charts.render_export_buttons(run_id=selected_run_id)
+
         # Timeline waterfall (scoped to selected run)
         delegation_charts.render_timeline(run_id=selected_run_id)
 
@@ -273,6 +276,10 @@ def render() -> None:
               delegation count, ended count, success %, average duration, total tokens,
               and total cost; mirrors `zeroclaw delegations stats`; scoped by the
               shared run selector
+            - **Export buttons** — Download CSV or JSONL of real delegation data;
+              CSV columns match `zeroclaw delegations export --format csv`; JSONL
+              contains raw event lines; both are scoped to the selected run when set;
+              buttons are disabled when no real log data is available
             - **Log Health** — collapsible panel showing file size, run count,
               time range, and cumulative token/cost totals across all stored runs;
               useful for verifying the rotation limit (max 100 runs by default)

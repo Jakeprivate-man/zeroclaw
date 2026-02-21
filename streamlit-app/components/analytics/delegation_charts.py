@@ -611,6 +611,120 @@ def render_cost_by_agent(run_id: Optional[str] = None) -> None:
     st.plotly_chart(fig, use_container_width=True)
 
 
+def render_export_buttons(run_id: Optional[str] = None) -> None:
+    """CSV and JSONL download buttons for delegation data.
+
+    Provides two ``st.download_button`` widgets side by side — one for CSV
+    (columns matching ``zeroclaw delegations export --format csv``), one for
+    JSONL (raw event lines straight from the delegation log).
+
+    Only real log data is offered for download; the mock fallback used by
+    charts is intentionally excluded. Buttons are disabled when no data is
+    available.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` exports all stored runs.
+    """
+    import io
+    import json as _json
+
+    def _csv_field(s: str) -> str:
+        """RFC 4180 minimal quoting — matches the Rust CLI implementation."""
+        if "," in s or '"' in s or "\n" in s:
+            return '"' + s.replace('"', '""') + '"'
+        return s
+
+    scope = f"[{run_id[:8]}…]" if run_id is not None else "(all runs)"
+    suffix = f"_{run_id[:8]}" if run_id is not None else "_all"
+    st.markdown(f"#### Export {scope}")
+
+    parser = DelegationParser()
+
+    # Collect real nodes only — do not export synthetic mock data
+    real_roots = parser.parse_delegation_tree(run_id)
+    real_nodes: List[DelegationNode] = []
+
+    def _walk(node: DelegationNode) -> None:
+        real_nodes.append(node)
+        for child in node.children:
+            _walk(child)
+
+    for root in real_roots:
+        _walk(root)
+
+    completed = [n for n in real_nodes if n.is_complete]
+
+    # ── CSV payload ────────────────────────────────────────────────────────
+    if completed:
+        buf = io.StringIO()
+        buf.write(
+            "run_id,agent_name,model,depth,duration_ms,"
+            "tokens_used,cost_usd,success,timestamp\n"
+        )
+        for node in completed:
+            ts = node.end_time.isoformat() if node.end_time else ""
+            row = ",".join([
+                _csv_field(node.run_id or ""),
+                _csv_field(node.agent_name),
+                _csv_field(node.model),
+                str(node.depth),
+                str(node.duration_ms) if node.duration_ms is not None else "",
+                str(node.tokens_used) if node.tokens_used is not None else "",
+                f"{node.cost_usd:.6f}" if node.cost_usd is not None else "",
+                "true" if node.success else "false",
+                _csv_field(ts),
+            ])
+            buf.write(row + "\n")
+        csv_bytes = buf.getvalue().encode()
+        csv_disabled = False
+    else:
+        csv_bytes = (
+            "run_id,agent_name,model,depth,duration_ms,"
+            "tokens_used,cost_usd,success,timestamp\n"
+        ).encode()
+        csv_disabled = True
+
+    # ── JSONL payload ──────────────────────────────────────────────────────
+    raw_events = parser._read_events(run_id)
+    if raw_events:
+        jsonl_bytes = ("\n".join(_json.dumps(e) for e in raw_events) + "\n").encode()
+        jsonl_disabled = False
+    else:
+        jsonl_bytes = b""
+        jsonl_disabled = True
+
+    # ── Download buttons ───────────────────────────────────────────────────
+    btn_col1, btn_col2 = st.columns(2)
+    with btn_col1:
+        st.download_button(
+            label="⬇ Download CSV",
+            data=csv_bytes,
+            file_name=f"delegations{suffix}.csv",
+            mime="text/csv",
+            disabled=csv_disabled,
+            help=(
+                "Download completed delegation records as CSV, matching "
+                "`zeroclaw delegations export --format csv`."
+            ),
+        )
+    with btn_col2:
+        st.download_button(
+            label="⬇ Download JSONL",
+            data=jsonl_bytes,
+            file_name=f"delegations{suffix}.jsonl",
+            mime="application/x-ndjson",
+            disabled=jsonl_disabled,
+            help=(
+                "Download raw delegation events as JSONL, matching "
+                "`zeroclaw delegations export --format jsonl`."
+            ),
+        )
+    if csv_disabled and jsonl_disabled:
+        st.caption(
+            "No delegation data available — run ZeroClaw to record delegation events."
+        )
+
+
 def render_run_selector() -> Optional[str]:
     """Shared run selector — returns the chosen run_id or None for 'All runs'.
 
