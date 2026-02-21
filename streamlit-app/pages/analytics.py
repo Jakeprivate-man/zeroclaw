@@ -154,32 +154,42 @@ def render() -> None:
 
         st.divider()
 
-        # Delegation tree visualization
-        delegation_tree.render_delegation_tree(use_mock_data=True)
+        # Delegation tree visualization (now using real data from JSONL)
+        delegation_tree.render_delegation_tree(use_mock_data=False)
 
-        # Instructions for real data
-        with st.expander("ℹ️ How to View Real Delegation Data"):
+        # Instructions for delegation tracking
+        with st.expander("ℹ️ About Delegation Tracking"):
             st.markdown("""
-            **Real delegation events will automatically appear here once:**
+            **✅ Phase 1 Delegation Visibility: COMPLETE**
 
-            1. ✅ **Backend is running** - ZeroClaw Rust backend must be running
-            2. ✅ **Agents are configured** - At least one sub-agent configured in `config.toml`
-            3. ✅ **Delegation occurs** - Parent agent delegates work to a sub-agent
-            4. ✅ **Events are logged** - Observer writes delegation events to logs
+            The delegation tracking system is now fully operational. This page displays
+            real delegation events from the ZeroClaw backend in real-time.
 
-            **To enable delegation event logging:**
+            **How it works:**
 
-            Currently showing mock data. To see real delegations, you need to add a
-            `DelegationEventObserver` to the Rust backend that writes delegation events
-            to `~/.zeroclaw/state/delegation.jsonl`.
+            1. **Backend Integration** - `DelegationEventObserver` writes events to JSONL
+            2. **Event Forwarding** - `ForwardingObserver` ensures child agent events are visible
+            3. **Event Storage** - All delegation events stored in `~/.zeroclaw/state/delegation.jsonl`
+            4. **UI Parsing** - This page reads and builds the delegation tree automatically
 
-            Once configured, this component will automatically read and display the
-            actual delegation tree from your running agents.
+            **What you see:**
 
-            **Example delegation.jsonl format:**
+            - **Delegation Tree** - Hierarchical view of agent → sub-agent relationships
+            - **Status Indicators** - 🟡 Running, ✅ Success, ❌ Failed
+            - **Metrics** - Duration, depth, provider/model for each delegation
+            - **Real-time Updates** - Page refreshes to show latest delegations
+
+            **If you see "No delegation data found":**
+
+            This means no delegations have occurred yet. Trigger a delegation by:
+            - Using the `delegate` tool in your agent configuration
+            - Running an agent workflow that includes sub-agent delegation
+            - Starting the ZeroClaw backend and executing tasks that delegate work
+
+            **Event Format (JSONL):**
             ```json
             {"event_type":"DelegationStart","agent_name":"research","provider":"anthropic","model":"claude-sonnet-4","depth":1,"agentic":true,"timestamp":"2026-02-21T10:30:45Z"}
-            {"event_type":"DelegationEnd","agent_name":"research","provider":"anthropic","model":"claude-sonnet-4","depth":1,"duration_ms":4512,"success":true,"timestamp":"2026-02-21T10:30:50Z"}
+            {"event_type":"DelegationEnd","agent_name":"research","provider":"anthropic","model":"claude-sonnet-4","depth":1,"duration_ms":4512,"success":true,"error_message":null,"timestamp":"2026-02-21T10:30:50Z"}
             ```
             """)
 
