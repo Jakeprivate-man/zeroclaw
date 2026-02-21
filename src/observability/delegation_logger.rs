@@ -3,6 +3,9 @@
 ///! This observer writes `DelegationStart` and `DelegationEnd` events to
 ///! `~/.zeroclaw/state/delegation.jsonl` in append-only JSONL format,
 ///! enabling the Streamlit UI to visualize delegation trees.
+///!
+///! Each observer instance is assigned a unique `run_id` (UUID) at creation time,
+///! which is written into every JSONL event to allow the UI to filter by run.
 
 use super::traits::{Observer, ObserverEvent, ObserverMetric};
 use std::any::Any;
@@ -14,13 +17,22 @@ use std::path::PathBuf;
 ///
 /// Only writes `DelegationStart` and `DelegationEnd` events, ignoring
 /// all other event types. Events are written in append-only mode with
-/// ISO8601 timestamps for consumption by the Streamlit delegation parser.
+/// ISO8601 timestamps and a `run_id` for consumption by the Streamlit
+/// delegation parser.
+///
+/// The `run_id` is a UUID generated at observer creation time. All events
+/// from a single process invocation share the same `run_id`, allowing the
+/// UI to display or filter delegations by run.
 pub struct DelegationEventObserver {
     log_file: PathBuf,
+    run_id: String,
 }
 
 impl DelegationEventObserver {
     /// Create a new delegation event logger.
+    ///
+    /// Generates a unique `run_id` (UUID v4) for this observer instance.
+    /// All delegation events written by this observer will include the same `run_id`.
     ///
     /// # Arguments
     ///
@@ -39,7 +51,17 @@ impl DelegationEventObserver {
         if let Some(parent) = log_file.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        Self { log_file }
+        Self {
+            log_file,
+            run_id: uuid::Uuid::new_v4().to_string(),
+        }
+    }
+
+    /// Return the run_id for this observer instance.
+    ///
+    /// Used in tests to verify the run_id is stable across events.
+    pub fn run_id(&self) -> &str {
+        &self.run_id
     }
 
     /// Write a JSON object to the log file (append-only, one line per event).
@@ -68,6 +90,7 @@ impl Observer for DelegationEventObserver {
             } => {
                 let json = serde_json::json!({
                     "event_type": "DelegationStart",
+                    "run_id": self.run_id,
                     "agent_name": agent_name,
                     "provider": provider,
                     "model": model,
@@ -88,6 +111,7 @@ impl Observer for DelegationEventObserver {
             } => {
                 let json = serde_json::json!({
                     "event_type": "DelegationEnd",
+                    "run_id": self.run_id,
                     "agent_name": agent_name,
                     "provider": provider,
                     "model": model,
@@ -131,9 +155,67 @@ mod tests {
     }
 
     #[test]
-    fn writes_delegation_start_event() {
+    fn run_id_is_valid_uuid() {
         let temp_file = NamedTempFile::new().unwrap();
         let observer = DelegationEventObserver::new(temp_file.path().to_path_buf());
+        // UUID v4 format: 8-4-4-4-12 hex chars separated by hyphens
+        let run_id = observer.run_id();
+        assert_eq!(run_id.len(), 36);
+        assert_eq!(run_id.chars().filter(|&c| c == '-').count(), 4);
+        // Verify it parses as a valid UUID
+        uuid::Uuid::parse_str(run_id).expect("run_id must be a valid UUID");
+    }
+
+    #[test]
+    fn run_id_is_stable_across_events() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let observer = DelegationEventObserver::new(temp_file.path().to_path_buf());
+        let run_id = observer.run_id().to_string();
+
+        observer.record_event(&ObserverEvent::DelegationStart {
+            agent_name: "agent-a".into(),
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4".into(),
+            depth: 0,
+            agentic: true,
+        });
+        observer.record_event(&ObserverEvent::DelegationEnd {
+            agent_name: "agent-a".into(),
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4".into(),
+            depth: 0,
+            duration: Duration::from_millis(100),
+            success: true,
+            error_message: None,
+        });
+
+        let content = std::fs::read_to_string(temp_file.path()).unwrap();
+        // Both events should contain the same run_id
+        assert_eq!(
+            content.matches(&run_id).count(),
+            2,
+            "Both events must contain the same run_id"
+        );
+    }
+
+    #[test]
+    fn different_instances_have_different_run_ids() {
+        let temp1 = NamedTempFile::new().unwrap();
+        let temp2 = NamedTempFile::new().unwrap();
+        let obs1 = DelegationEventObserver::new(temp1.path().to_path_buf());
+        let obs2 = DelegationEventObserver::new(temp2.path().to_path_buf());
+        assert_ne!(
+            obs1.run_id(),
+            obs2.run_id(),
+            "Different observer instances must have different run_ids"
+        );
+    }
+
+    #[test]
+    fn writes_delegation_start_event_with_run_id() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let observer = DelegationEventObserver::new(temp_file.path().to_path_buf());
+        let expected_run_id = observer.run_id().to_string();
 
         observer.record_event(&ObserverEvent::DelegationStart {
             agent_name: "research".into(),
@@ -143,19 +225,20 @@ mod tests {
             agentic: true,
         });
 
-        // Read file and verify JSON
         let content = std::fs::read_to_string(temp_file.path()).unwrap();
         assert!(content.contains("\"event_type\":\"DelegationStart\""));
         assert!(content.contains("\"agent_name\":\"research\""));
         assert!(content.contains("\"provider\":\"anthropic\""));
         assert!(content.contains("\"depth\":1"));
         assert!(content.contains("\"agentic\":true"));
+        assert!(content.contains(&format!("\"run_id\":\"{}\"", expected_run_id)));
     }
 
     #[test]
-    fn writes_delegation_end_event() {
+    fn writes_delegation_end_event_with_run_id() {
         let temp_file = NamedTempFile::new().unwrap();
         let observer = DelegationEventObserver::new(temp_file.path().to_path_buf());
+        let expected_run_id = observer.run_id().to_string();
 
         observer.record_event(&ObserverEvent::DelegationEnd {
             agent_name: "research".into(),
@@ -167,11 +250,11 @@ mod tests {
             error_message: None,
         });
 
-        // Read file and verify JSON
         let content = std::fs::read_to_string(temp_file.path()).unwrap();
         assert!(content.contains("\"event_type\":\"DelegationEnd\""));
         assert!(content.contains("\"duration_ms\":4512"));
         assert!(content.contains("\"success\":true"));
+        assert!(content.contains(&format!("\"run_id\":\"{}\"", expected_run_id)));
     }
 
     #[test]
@@ -179,10 +262,8 @@ mod tests {
         let temp_file = NamedTempFile::new().unwrap();
         let observer = DelegationEventObserver::new(temp_file.path().to_path_buf());
 
-        // Record a non-delegation event
         observer.record_event(&ObserverEvent::HeartbeatTick);
 
-        // File should be empty or not exist
         let content = std::fs::read_to_string(temp_file.path()).unwrap_or_default();
         assert!(content.is_empty() || !content.contains("HeartbeatTick"));
     }
@@ -192,7 +273,6 @@ mod tests {
         let temp_file = NamedTempFile::new().unwrap();
         let observer = DelegationEventObserver::new(temp_file.path().to_path_buf());
 
-        // Write start event
         observer.record_event(&ObserverEvent::DelegationStart {
             agent_name: "agent1".into(),
             provider: "anthropic".into(),
@@ -201,7 +281,6 @@ mod tests {
             agentic: true,
         });
 
-        // Write end event
         observer.record_event(&ObserverEvent::DelegationEnd {
             agent_name: "agent1".into(),
             provider: "anthropic".into(),
@@ -212,7 +291,6 @@ mod tests {
             error_message: None,
         });
 
-        // Verify both events in file
         let content = std::fs::read_to_string(temp_file.path()).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 2);
