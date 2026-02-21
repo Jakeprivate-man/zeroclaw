@@ -1,4 +1,5 @@
 pub mod delegation_logger;
+pub mod delegation_stats;
 pub mod log;
 pub mod multi;
 pub mod noop;
@@ -8,6 +9,8 @@ pub mod traits;
 pub mod verbose;
 
 pub use delegation_logger::DelegationEventObserver;
+#[allow(unused_imports)]
+pub use delegation_stats::{DelegationStatsObserver, DelegationStatsSnapshot};
 #[allow(unused_imports)]
 pub use self::log::LogObserver;
 #[allow(unused_imports)]
