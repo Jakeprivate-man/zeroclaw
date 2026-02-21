@@ -8,6 +8,7 @@ all other analytics components.
 
 import streamlit as st
 import plotly.graph_objects as go
+from datetime import datetime, timedelta
 from typing import List, Optional
 from lib.delegation_parser import DelegationParser, DelegationNode, RunSummary
 
@@ -200,5 +201,119 @@ def render_success_rate_by_depth() -> None:
         xaxis_title="Depth",
         yaxis_title="Count",
         legend=dict(font=dict(color=_GREEN_PRIMARY)),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_timeline(run_id: Optional[str] = None) -> None:
+    """Gantt-style waterfall — each delegation as a horizontal bar on a real timeline.
+
+    Shows start/end times as actual positions so concurrency and duration are
+    immediately visible. Defaults to the most recent run when no run_id is given.
+    Bars are colored green for success, red for failure, yellow for in-progress.
+
+    Args:
+        run_id: Optional run ID to visualize. Defaults to most recent run.
+    """
+    st.markdown("#### Delegation Timeline")
+    parser = DelegationParser()
+
+    # Resolve run_id: default to most recent run
+    effective_run_id = run_id
+    if effective_run_id is None:
+        runs = parser.list_runs()
+        if runs:
+            effective_run_id = runs[0].run_id  # newest first
+
+    nodes = _collect_all_nodes(parser, effective_run_id)
+    timed = [n for n in nodes if n.start_time is not None]
+
+    if not timed:
+        st.caption("No timed delegation data available — showing mock example")
+        # Synthetic waterfall so the chart is never blank
+        now = datetime.now()
+        base_ms = now.timestamp() * 1000
+        mock_rows = [
+            ("main",              0, base_ms,        5234, True,  None),
+            ("  research",        1, base_ms + 100,  4512, True,  None),
+            ("    codebase_analyzer", 2, base_ms + 200, 1234, True,  None),
+            ("    doc_analyzer",  2, base_ms + 1500, 987,  True,  None),
+        ]
+        labels    = [r[0] for r in mock_rows]
+        starts_ms = [r[2] for r in mock_rows]
+        durs_ms   = [r[3] for r in mock_rows]
+        colors    = [_GREEN_PRIMARY] * len(mock_rows)
+        hover_txts = [
+            f"<b>{r[0].strip()}</b><br>Depth: {r[1]}<br>Duration: {r[3]}ms<br>Status: ✅ Success"
+            for r in mock_rows
+        ]
+    else:
+        timed_sorted = sorted(timed, key=lambda n: (n.start_time, n.depth))
+        labels, starts_ms, durs_ms, colors, hover_txts = [], [], [], [], []
+
+        for node in timed_sorted:
+            indent = "\u00a0\u00a0" * node.depth   # non-breaking spaces for y-axis indent
+            labels.append(f"{indent}{node.agent_name} (d{node.depth})")
+            starts_ms.append(node.start_time.timestamp() * 1000)
+
+            if node.duration_ms is not None:
+                dur = node.duration_ms
+            elif node.end_time:
+                dur = int((node.end_time - node.start_time).total_seconds() * 1000)
+            else:
+                dur = int((datetime.now() - node.start_time).total_seconds() * 1000)
+            durs_ms.append(max(dur, 10))  # at least 10ms so the bar is always visible
+
+            if not node.is_complete:
+                colors.append(_YELLOW)
+            elif node.success:
+                colors.append(_GREEN_PRIMARY)
+            else:
+                colors.append(_RED)
+
+            dur_str = f"{dur}ms" if dur < 1000 else f"{dur / 1000:.2f}s"
+            tok_str = f"{node.tokens_used:,}" if node.tokens_used is not None else "—"
+            cost_str = f"${node.cost_usd:.4f}" if node.cost_usd is not None else "—"
+            hover_txts.append(
+                f"<b>{node.agent_name}</b><br>"
+                f"Depth: {node.depth}<br>"
+                f"Duration: {dur_str}<br>"
+                f"Tokens: {tok_str}<br>"
+                f"Cost: {cost_str}<br>"
+                f"Status: {node.status}"
+            )
+
+    row_height_px = 32
+    chart_height = max(180, len(labels) * row_height_px + 80)
+
+    fig = go.Figure(
+        go.Bar(
+            y=labels,
+            x=durs_ms,
+            base=starts_ms,
+            orientation="h",
+            marker_color=colors,
+            hovertemplate="%{customdata}<extra></extra>",
+            customdata=hover_txts,
+        )
+    )
+    fig.update_layout(
+        paper_bgcolor=_BG,
+        plot_bgcolor=_BG,
+        font=dict(color=_GREEN_PRIMARY),
+        title="Delegation Timeline (most recent run)" if effective_run_id else "Delegation Timeline",
+        margin=dict(l=160, r=20, t=40, b=40),
+        height=chart_height,
+        xaxis=dict(
+            type="date",
+            tickformat="%H:%M:%S",
+            gridcolor=_GRID,
+            zerolinecolor=_GRID,
+        ),
+        yaxis=dict(
+            autorange="reversed",
+            gridcolor=_GRID,
+            zerolinecolor=_GRID,
+        ),
     )
     st.plotly_chart(fig, use_container_width=True)

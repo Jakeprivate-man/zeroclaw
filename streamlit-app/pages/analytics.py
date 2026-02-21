@@ -169,6 +169,9 @@ def render() -> None:
         with chart_col4:
             delegation_charts.render_success_rate_by_depth()
 
+        # Timeline waterfall (full width — most recent run)
+        delegation_charts.render_timeline()
+
         st.divider()
 
         # Delegation tree visualization (real data from JSONL)
@@ -193,6 +196,9 @@ def render() -> None:
 
             - **Cross-run charts** — cost per run, token breakdown by model, depth
               distribution, and success/failure rates across all historical runs
+            - **Timeline waterfall** — Gantt-style chart showing each delegation
+              as a horizontal bar positioned by actual start/end timestamps;
+              makes concurrency and relative duration immediately visible
             - **Run Selector** — filter the tree to a single process invocation
             - **Delegation Tree** — hierarchical agent → sub-agent view with status,
               duration, tokens, and cost per node
