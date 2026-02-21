@@ -171,7 +171,51 @@ fn fmt_duration(ms: u64) -> String {
     }
 }
 
+// ─── Public data types ────────────────────────────────────────────────────────
+
+/// Aggregate statistics extracted from the delegation log.
+///
+/// Returned by [`get_log_summary`] for callers that need the data
+/// programmatically (e.g. `zeroclaw status`) rather than pre-formatted text.
+#[derive(Debug, Clone, Default)]
+pub struct LogSummary {
+    /// Number of distinct process invocations stored in the log.
+    pub run_count: usize,
+    /// Total `DelegationStart` events across all runs.
+    pub total_delegations: usize,
+    /// Cumulative tokens across all `DelegationEnd` events.
+    pub total_tokens: u64,
+    /// Cumulative cost (USD) across all `DelegationEnd` events.
+    pub total_cost_usd: f64,
+    /// Start time of the most recent run (newest first).
+    pub latest_run_time: Option<DateTime<Utc>>,
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
+
+/// Return aggregate statistics from the delegation log, or `None` if the
+/// log does not exist or contains no parseable run data.
+pub fn get_log_summary(log_path: &Path) -> Result<Option<LogSummary>> {
+    let events = read_all_events(log_path)?;
+    if events.is_empty() {
+        return Ok(None);
+    }
+    let runs = collect_runs(&events);
+    if runs.is_empty() {
+        return Ok(None);
+    }
+    let total_delegations: usize = runs.iter().map(|r| r.delegation_count).sum();
+    let total_tokens: u64 = runs.iter().map(|r| r.total_tokens).sum();
+    let total_cost_usd: f64 = runs.iter().map(|r| r.total_cost_usd).sum();
+    let latest_run_time = runs.first().and_then(|r| r.start_time);
+    Ok(Some(LogSummary {
+        run_count: runs.len(),
+        total_delegations,
+        total_tokens,
+        total_cost_usd,
+        latest_run_time,
+    }))
+}
 
 /// Print a one-line summary of all stored delegation runs to stdout.
 pub fn print_summary(log_path: &Path) -> Result<()> {
@@ -507,5 +551,54 @@ mod tests {
         assert_eq!(fmt_duration(500), "500ms");
         assert_eq!(fmt_duration(1000), "1.00s");
         assert_eq!(fmt_duration(2500), "2.50s");
+    }
+
+    #[test]
+    fn get_log_summary_on_missing_file_returns_none() {
+        let path = std::env::temp_dir().join("zeroclaw_test_summary_missing.jsonl");
+        let _ = std::fs::remove_file(&path);
+        let result = get_log_summary(&path);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn get_log_summary_on_empty_log_returns_none() {
+        let path = std::env::temp_dir().join("zeroclaw_test_summary_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = get_log_summary(&path);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn get_log_summary_aggregates_all_runs() {
+        let path = std::env::temp_dir().join("zeroclaw_test_summary_agg.jsonl");
+        let mut lines = Vec::new();
+        lines.push(serde_json::to_string(&make_start("run-x", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-x", "main", 0, "2026-01-01T10:00:05Z", 1000, 0.003, true)).unwrap());
+        lines.push(serde_json::to_string(&make_start("run-y", "main", 0, "2026-01-02T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-y", "main", 0, "2026-01-02T10:00:05Z", 2000, 0.006, true)).unwrap());
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let summary = get_log_summary(&path).unwrap().unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(summary.run_count, 2);
+        assert_eq!(summary.total_delegations, 2);
+        assert_eq!(summary.total_tokens, 3000);
+        assert!((summary.total_cost_usd - 0.009).abs() < 1e-9);
+    }
+
+    #[test]
+    fn get_log_summary_latest_run_time_is_most_recent() {
+        let path = std::env::temp_dir().join("zeroclaw_test_summary_latest.jsonl");
+        let mut lines = Vec::new();
+        lines.push(serde_json::to_string(&make_start("run-old", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_start("run-new", "main", 0, "2026-01-03T10:00:00Z")).unwrap());
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let summary = get_log_summary(&path).unwrap().unwrap();
+        let _ = std::fs::remove_file(&path);
+        let ts = summary.latest_run_time.expect("should have latest_run_time");
+        assert_eq!(ts.format("%Y-%m-%d").to_string(), "2026-01-03");
     }
 }

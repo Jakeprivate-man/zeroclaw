@@ -877,6 +877,42 @@ async fn main() -> Result<()> {
             );
             println!("  Boards:    {}", config.peripherals.boards.len());
 
+            println!();
+            let delegation_log = std::path::PathBuf::from(
+                shellexpand::tilde("~/.zeroclaw/state/delegation.jsonl").as_ref(),
+            );
+            println!("Delegations:");
+            match observability::delegation_report::get_log_summary(&delegation_log) {
+                Ok(Some(s)) => {
+                    println!("  Runs stored:      {}", s.run_count);
+                    println!("  Delegations:      {}", s.total_delegations);
+                    println!(
+                        "  Total tokens:     {}",
+                        if s.total_tokens > 0 {
+                            s.total_tokens.to_string()
+                        } else {
+                            "—".to_owned()
+                        }
+                    );
+                    println!(
+                        "  Total cost:       {}",
+                        if s.total_cost_usd > 0.0 {
+                            format!("${:.4}", s.total_cost_usd)
+                        } else {
+                            "—".to_owned()
+                        }
+                    );
+                    if let Some(ts) = s.latest_run_time {
+                        println!(
+                            "  Latest run:       {}",
+                            ts.format("%Y-%m-%d %H:%M:%S UTC")
+                        );
+                    }
+                }
+                Ok(None) => println!("  No delegation data recorded yet."),
+                Err(e) => println!("  (could not read log: {e})"),
+            }
+
             Ok(())
         }
 
