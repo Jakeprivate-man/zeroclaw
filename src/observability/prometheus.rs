@@ -1,6 +1,7 @@
 use super::traits::{Observer, ObserverEvent, ObserverMetric};
 use prometheus::{
-    Encoder, GaugeVec, Histogram, HistogramOpts, HistogramVec, IntCounterVec, Registry, TextEncoder,
+    CounterVec, Encoder, GaugeVec, Histogram, HistogramOpts, HistogramVec, IntCounterVec, Registry,
+    TextEncoder,
 };
 
 /// Prometheus-backed observer — exposes metrics for scraping via `/metrics`.
@@ -23,6 +24,12 @@ pub struct PrometheusObserver {
     tokens_used: prometheus::IntGauge,
     active_sessions: GaugeVec,
     queue_depth: GaugeVec,
+
+    // Delegation metrics
+    delegations_total: IntCounterVec,
+    delegation_duration: HistogramVec,
+    delegation_tokens_total: IntCounterVec,
+    delegation_cost_usd_total: CounterVec,
 }
 
 impl PrometheusObserver {
@@ -104,6 +111,43 @@ impl PrometheusObserver {
         )
         .expect("valid metric");
 
+        let delegations_total = IntCounterVec::new(
+            prometheus::Opts::new(
+                "zeroclaw_delegations_total",
+                "Total completed sub-agent delegations",
+            ),
+            &["provider", "model", "depth", "success"],
+        )
+        .expect("valid metric");
+
+        let delegation_duration = HistogramVec::new(
+            HistogramOpts::new(
+                "zeroclaw_delegation_duration_seconds",
+                "Sub-agent delegation duration in seconds",
+            )
+            .buckets(vec![0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0]),
+            &["provider", "model", "depth"],
+        )
+        .expect("valid metric");
+
+        let delegation_tokens_total = IntCounterVec::new(
+            prometheus::Opts::new(
+                "zeroclaw_delegation_tokens_total",
+                "Total tokens consumed by sub-agent delegations",
+            ),
+            &["provider", "model", "depth"],
+        )
+        .expect("valid metric");
+
+        let delegation_cost_usd_total = CounterVec::new(
+            prometheus::Opts::new(
+                "zeroclaw_delegation_cost_usd_total",
+                "Total estimated USD cost of sub-agent delegations",
+            ),
+            &["provider", "model", "depth"],
+        )
+        .expect("valid metric");
+
         // Register all metrics
         registry.register(Box::new(agent_starts.clone())).ok();
         registry.register(Box::new(tool_calls.clone())).ok();
@@ -116,6 +160,14 @@ impl PrometheusObserver {
         registry.register(Box::new(tokens_used.clone())).ok();
         registry.register(Box::new(active_sessions.clone())).ok();
         registry.register(Box::new(queue_depth.clone())).ok();
+        registry.register(Box::new(delegations_total.clone())).ok();
+        registry.register(Box::new(delegation_duration.clone())).ok();
+        registry
+            .register(Box::new(delegation_tokens_total.clone()))
+            .ok();
+        registry
+            .register(Box::new(delegation_cost_usd_total.clone()))
+            .ok();
 
         Self {
             registry,
@@ -130,6 +182,10 @@ impl PrometheusObserver {
             tokens_used,
             active_sessions,
             queue_depth,
+            delegations_total,
+            delegation_duration,
+            delegation_tokens_total,
+            delegation_cost_usd_total,
         }
     }
 
@@ -197,28 +253,40 @@ impl Observer for PrometheusObserver {
             } => {
                 self.errors.with_label_values(&[component]).inc();
             }
-            ObserverEvent::DelegationStart {
-                agent_name: _,
-                provider: _,
-                model: _,
-                depth: _,
-                agentic: _,
-            } => {
-                // DelegationStart doesn't record metrics; only DelegationEnd does
+            ObserverEvent::DelegationStart { .. } => {
+                // Counted on DelegationEnd so we have outcome data
             }
             ObserverEvent::DelegationEnd {
-                agent_name: _,
-                provider: _,
-                model: _,
-                depth: _,
-                duration: _,
-                success: _,
-                error_message: _,
-                tokens_used: _,
-                cost_usd: _,
+                provider,
+                model,
+                depth,
+                duration,
+                success,
+                tokens_used,
+                cost_usd,
+                ..
             } => {
-                // Delegation metrics could be added here in the future
-                // For now, delegation visibility is primarily through log/otel observers
+                let depth_str = depth.to_string();
+                let success_str = if *success { "true" } else { "false" };
+                let provider = provider.as_str();
+                let model = model.as_str();
+                let depth_str = depth_str.as_str();
+                self.delegations_total
+                    .with_label_values(&[provider, model, depth_str, success_str])
+                    .inc();
+                self.delegation_duration
+                    .with_label_values(&[provider, model, depth_str])
+                    .observe(duration.as_secs_f64());
+                if let Some(t) = tokens_used {
+                    self.delegation_tokens_total
+                        .with_label_values(&[provider, model, depth_str])
+                        .inc_by(*t);
+                }
+                if let Some(c) = cost_usd {
+                    self.delegation_cost_usd_total
+                        .with_label_values(&[provider, model, depth_str])
+                        .inc_by(*c);
+                }
             }
         }
     }
@@ -302,6 +370,24 @@ mod tests {
         obs.record_event(&ObserverEvent::Error {
             component: "provider".into(),
             message: "timeout".into(),
+        });
+        obs.record_event(&ObserverEvent::DelegationStart {
+            agent_name: "worker".into(),
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4".into(),
+            depth: 1,
+            agentic: true,
+        });
+        obs.record_event(&ObserverEvent::DelegationEnd {
+            agent_name: "worker".into(),
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4".into(),
+            depth: 1,
+            duration: Duration::from_millis(300),
+            success: true,
+            error_message: None,
+            tokens_used: Some(400),
+            cost_usd: Some(0.0012),
         });
     }
 
@@ -403,5 +489,191 @@ mod tests {
 
         let output = obs.encode();
         assert!(output.contains("zeroclaw_tokens_used_last 200"));
+    }
+
+    #[test]
+    fn delegation_counter_tracks_by_depth_and_outcome() {
+        let obs = PrometheusObserver::new();
+
+        obs.record_event(&ObserverEvent::DelegationEnd {
+            agent_name: "worker".into(),
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4".into(),
+            depth: 1,
+            duration: Duration::from_millis(200),
+            success: true,
+            error_message: None,
+            tokens_used: None,
+            cost_usd: None,
+        });
+        obs.record_event(&ObserverEvent::DelegationEnd {
+            agent_name: "helper".into(),
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4".into(),
+            depth: 1,
+            duration: Duration::from_millis(100),
+            success: false,
+            error_message: Some("timeout".into()),
+            tokens_used: None,
+            cost_usd: None,
+        });
+        obs.record_event(&ObserverEvent::DelegationEnd {
+            agent_name: "deep".into(),
+            provider: "anthropic".into(),
+            model: "claude-haiku-4".into(),
+            depth: 2,
+            duration: Duration::from_millis(50),
+            success: true,
+            error_message: None,
+            tokens_used: None,
+            cost_usd: None,
+        });
+
+        let output = obs.encode();
+        assert!(
+            output.contains(
+                r#"zeroclaw_delegations_total{depth="1",model="claude-sonnet-4",provider="anthropic",success="true"} 1"#
+            ),
+            "Expected successful depth-1 delegation counter"
+        );
+        assert!(
+            output.contains(
+                r#"zeroclaw_delegations_total{depth="1",model="claude-sonnet-4",provider="anthropic",success="false"} 1"#
+            ),
+            "Expected failed depth-1 delegation counter"
+        );
+        assert!(
+            output.contains(
+                r#"zeroclaw_delegations_total{depth="2",model="claude-haiku-4",provider="anthropic",success="true"} 1"#
+            ),
+            "Expected successful depth-2 delegation counter"
+        );
+    }
+
+    #[test]
+    fn delegation_duration_histogram_emitted() {
+        let obs = PrometheusObserver::new();
+
+        obs.record_event(&ObserverEvent::DelegationEnd {
+            agent_name: "worker".into(),
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4".into(),
+            depth: 0,
+            duration: Duration::from_millis(1500),
+            success: true,
+            error_message: None,
+            tokens_used: None,
+            cost_usd: None,
+        });
+
+        let output = obs.encode();
+        assert!(
+            output.contains("zeroclaw_delegation_duration_seconds"),
+            "Expected delegation duration histogram"
+        );
+        assert!(
+            output.contains(r#"zeroclaw_delegation_duration_seconds_count{depth="0",model="claude-sonnet-4",provider="anthropic"} 1"#),
+            "Expected delegation duration count"
+        );
+    }
+
+    #[test]
+    fn delegation_tokens_accumulate() {
+        let obs = PrometheusObserver::new();
+
+        for tokens in [100u64, 250, 400] {
+            obs.record_event(&ObserverEvent::DelegationEnd {
+                agent_name: "worker".into(),
+                provider: "anthropic".into(),
+                model: "claude-sonnet-4".into(),
+                depth: 1,
+                duration: Duration::from_millis(100),
+                success: true,
+                error_message: None,
+                tokens_used: Some(tokens),
+                cost_usd: None,
+            });
+        }
+
+        let output = obs.encode();
+        assert!(
+            output.contains(
+                r#"zeroclaw_delegation_tokens_total{depth="1",model="claude-sonnet-4",provider="anthropic"} 750"#
+            ),
+            "Expected cumulative token count of 750"
+        );
+    }
+
+    #[test]
+    fn delegation_cost_accumulates() {
+        let obs = PrometheusObserver::new();
+
+        obs.record_event(&ObserverEvent::DelegationEnd {
+            agent_name: "worker".into(),
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4".into(),
+            depth: 0,
+            duration: Duration::from_millis(200),
+            success: true,
+            error_message: None,
+            tokens_used: None,
+            cost_usd: Some(0.005),
+        });
+        obs.record_event(&ObserverEvent::DelegationEnd {
+            agent_name: "worker".into(),
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4".into(),
+            depth: 0,
+            duration: Duration::from_millis(150),
+            success: true,
+            error_message: None,
+            tokens_used: None,
+            cost_usd: Some(0.003),
+        });
+
+        let output = obs.encode();
+        assert!(
+            output.contains("zeroclaw_delegation_cost_usd_total"),
+            "Expected delegation cost counter"
+        );
+        // 0.005 + 0.003 = 0.008; Prometheus renders with up to 15 significant digits
+        assert!(
+            output.contains(
+                r#"zeroclaw_delegation_cost_usd_total{depth="0",model="claude-sonnet-4",provider="anthropic"}"#
+            ) && output.contains("0.008"),
+            "Expected cumulative cost of 0.008"
+        );
+    }
+
+    #[test]
+    fn delegation_metrics_absent_when_no_events() {
+        let obs = PrometheusObserver::new();
+        // Fire a non-delegation event to ensure we get output
+        obs.record_event(&ObserverEvent::HeartbeatTick);
+
+        let output = obs.encode();
+        // Delegation counters should not appear in output when zero delegations have been recorded
+        assert!(
+            !output.contains("zeroclaw_delegations_total{"),
+            "Delegation counter series should not appear with zero observations"
+        );
+    }
+
+    #[test]
+    fn delegation_null_tokens_and_cost_do_not_panic() {
+        let obs = PrometheusObserver::new();
+        obs.record_event(&ObserverEvent::DelegationEnd {
+            agent_name: "worker".into(),
+            provider: "anthropic".into(),
+            model: "claude-haiku-4".into(),
+            depth: 1,
+            duration: Duration::from_millis(80),
+            success: false,
+            error_message: Some("provider error".into()),
+            tokens_used: None,
+            cost_usd: None,
+        });
+        let output = obs.encode();
+        assert!(output.contains("zeroclaw_delegations_total"));
     }
 }
