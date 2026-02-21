@@ -157,6 +157,7 @@ pub fn all_tools(
         security,
         Arc::new(NativeRuntime::new()),
         memory,
+        Arc::new(crate::observability::NoopObserver),
         composio_key,
         composio_entity_id,
         browser_config,
@@ -175,6 +176,7 @@ pub fn all_tools_with_runtime(
     security: &Arc<SecurityPolicy>,
     runtime: Arc<dyn RuntimeAdapter>,
     memory: Arc<dyn Memory>,
+    observer: Arc<dyn crate::observability::Observer>,
     composio_key: Option<&str>,
     composio_entity_id: Option<&str>,
     browser_config: &crate::config::BrowserConfig,
@@ -295,7 +297,8 @@ pub fn all_tools_with_runtime(
             },
         )
         .with_parent_tools(parent_tools)
-        .with_multimodal_config(root_config.multimodal.clone());
+        .with_multimodal_config(root_config.multimodal.clone())
+        .with_parent_observer(observer.clone());
         tool_arcs.push(Arc::new(delegate_tool));
     }
 

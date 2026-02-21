@@ -79,6 +79,43 @@ impl Observer for LogObserver {
                     "llm.response"
                 );
             }
+            ObserverEvent::DelegationStart {
+                agent_name,
+                provider,
+                model,
+                depth,
+                agentic,
+            } => {
+                info!(
+                    agent_name = %agent_name,
+                    provider = %provider,
+                    model = %model,
+                    depth = depth,
+                    agentic = agentic,
+                    "delegation.start"
+                );
+            }
+            ObserverEvent::DelegationEnd {
+                agent_name,
+                provider,
+                model,
+                depth,
+                duration,
+                success,
+                error_message,
+            } => {
+                let ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+                info!(
+                    agent_name = %agent_name,
+                    provider = %provider,
+                    model = %model,
+                    depth = depth,
+                    duration_ms = ms,
+                    success = success,
+                    error = ?error_message,
+                    "delegation.end"
+                );
+            }
         }
     }
 

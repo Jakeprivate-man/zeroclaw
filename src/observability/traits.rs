@@ -63,6 +63,42 @@ pub enum ObserverEvent {
         /// Human-readable error description. Must not contain secrets or tokens.
         message: String,
     },
+    /// A sub-agent delegation has started.
+    ///
+    /// Emitted when a parent agent delegates work to a child agent via DelegateTool.
+    /// Enables tracking of nested agent execution hierarchies.
+    DelegationStart {
+        /// Name of the sub-agent being delegated to.
+        agent_name: String,
+        /// Provider for the sub-agent (e.g., `"anthropic"`, `"openai"`).
+        provider: String,
+        /// Model for the sub-agent (e.g., `"claude-sonnet-4"`, `"gpt-4"`).
+        model: String,
+        /// Delegation depth (0 = root agent, 1 = first-level sub-agent, etc.).
+        depth: u32,
+        /// Whether this is an agentic delegation (full agent loop) or simple (single call).
+        agentic: bool,
+    },
+    /// A sub-agent delegation has completed.
+    ///
+    /// Emitted when a delegated sub-agent finishes execution, enabling
+    /// end-to-end tracking of delegation chains and their outcomes.
+    DelegationEnd {
+        /// Name of the sub-agent that completed.
+        agent_name: String,
+        /// Provider for the sub-agent.
+        provider: String,
+        /// Model for the sub-agent.
+        model: String,
+        /// Delegation depth.
+        depth: u32,
+        /// Duration of the delegation.
+        duration: Duration,
+        /// Whether the delegation succeeded.
+        success: bool,
+        /// Error message if delegation failed.
+        error_message: Option<String>,
+    },
 }
 
 /// Numeric metrics emitted by the agent runtime.

@@ -252,6 +252,7 @@ impl Agent {
             &security,
             runtime,
             memory.clone(),
+            observer.clone(),
             composio_key,
             composio_entity_id,
             &config.browser,

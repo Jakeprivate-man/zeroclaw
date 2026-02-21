@@ -2329,6 +2329,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
         &security,
         runtime,
         Arc::clone(&mem),
+        observer.clone(),
         composio_key,
         composio_entity_id,
         &config.browser,

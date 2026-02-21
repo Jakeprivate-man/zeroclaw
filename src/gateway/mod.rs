@@ -333,6 +333,8 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         &config.autonomy,
         &config.workspace_dir,
     ));
+    let observer: Arc<dyn crate::observability::Observer> =
+        Arc::from(crate::observability::create_observer(&config.observability));
 
     let (composio_key, composio_entity_id) = if config.composio.enabled {
         (
@@ -348,6 +350,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         &security,
         runtime,
         Arc::clone(&mem),
+        observer.clone(),
         composio_key,
         composio_entity_id,
         &config.browser,
