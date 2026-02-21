@@ -394,7 +394,9 @@ Examples:
   zeroclaw delegations show          # tree for most recent run
   zeroclaw delegations show --run <id>  # tree for a specific run
   zeroclaw delegations stats         # per-agent stats (all runs)
-  zeroclaw delegations stats --run <id>  # per-agent stats for one run")]
+  zeroclaw delegations stats --run <id>  # per-agent stats for one run
+  zeroclaw delegations export        # stream all events as JSONL
+  zeroclaw delegations export --format csv --run <id>  # CSV for one run")]
     Delegations {
         #[command(subcommand)]
         delegation_command: Option<DelegationCommands>,
@@ -433,6 +435,25 @@ enum DelegationCommands {
         #[arg(long)]
         run: Option<String>,
     },
+    /// Export delegation events as JSONL (default) or CSV to stdout
+    Export {
+        /// Filter to a specific run ID (default: all runs)
+        #[arg(long)]
+        run: Option<String>,
+        /// Output format: jsonl (one event per line) or csv (DelegationEnd rows only)
+        #[arg(long, value_enum, default_value = "jsonl")]
+        format: DelegationExportFormat,
+    },
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, clap::ValueEnum)]
+enum DelegationExportFormat {
+    /// Newline-delimited JSON — one raw event object per line
+    #[value(name = "jsonl")]
+    Jsonl,
+    /// RFC 4180 CSV — one row per DelegationEnd event
+    #[value(name = "csv")]
+    Csv,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1038,6 +1059,17 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::Stats { run }) => {
                     observability::delegation_report::print_stats(&log_path, run.as_deref())
+                }
+                Some(DelegationCommands::Export { run, format }) => {
+                    let fmt = match format {
+                        DelegationExportFormat::Jsonl => {
+                            observability::delegation_report::ExportFormat::Jsonl
+                        }
+                        DelegationExportFormat::Csv => {
+                            observability::delegation_report::ExportFormat::Csv
+                        }
+                    };
+                    observability::delegation_report::print_export(&log_path, run.as_deref(), fmt)
                 }
             }
         }

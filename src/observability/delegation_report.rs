@@ -1,10 +1,11 @@
 //! CLI-facing delegation log reporter.
 //!
-//! Public entry points used by `zeroclaw delegations [list|show|stats]`:
+//! Public entry points used by `zeroclaw delegations [list|show|stats|export]`:
 //! - [`print_summary`]: overall totals across all stored runs.
 //! - [`print_runs`]: table of runs, newest first.
 //! - [`print_tree`]: indented delegation tree for one run.
 //! - [`print_stats`]: per-agent aggregated statistics table.
+//! - [`print_export`]: stream delegation events as JSONL or CSV.
 //! - [`get_log_summary`]: programmatic aggregate for `zeroclaw status`.
 //!
 //! All parsing is done via `serde_json::Value` — no new dependencies.
@@ -228,7 +229,28 @@ fn fmt_duration(ms: u64) -> String {
     }
 }
 
+// ─── CSV helpers ─────────────────────────────────────────────────────────────
+
+/// Wrap `s` in double-quotes when it contains a comma, double-quote, or newline.
+/// Internal double-quotes are escaped by doubling them (RFC 4180).
+fn csv_field(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_owned()
+    }
+}
+
 // ─── Public data types ────────────────────────────────────────────────────────
+
+/// Output format for [`print_export`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportFormat {
+    /// Newline-delimited JSON — one raw event object per line.
+    Jsonl,
+    /// RFC 4180 CSV — one row per `DelegationEnd` event.
+    Csv,
+}
 
 /// Aggregate statistics extracted from the delegation log.
 ///
@@ -249,6 +271,76 @@ pub struct LogSummary {
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
+
+/// Stream delegation events to stdout as JSONL or CSV.
+///
+/// `ExportFormat::Jsonl` (default): emits one raw event JSON object per line,
+/// suitable for piping to `jq` or re-importing into another tool.
+///
+/// `ExportFormat::Csv`: emits a header row followed by one row per
+/// `DelegationEnd` event with columns:
+/// `run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp`
+///
+/// When `run_id` is `Some`, only events from that run are included.
+/// Produces no output (and returns `Ok`) when the log is absent or empty.
+pub fn print_export(log_path: &Path, run_id: Option<&str>, format: ExportFormat) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        return Ok(());
+    }
+
+    let events: Vec<Value> = if let Some(rid) = run_id {
+        all_events
+            .into_iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events
+    };
+
+    match format {
+        ExportFormat::Jsonl => {
+            for ev in &events {
+                println!("{}", serde_json::to_string(ev)?);
+            }
+        }
+        ExportFormat::Csv => {
+            println!("run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp");
+            for ev in &events {
+                if ev.get("event_type").and_then(|x| x.as_str()) != Some("DelegationEnd") {
+                    continue;
+                }
+                let run_id_col = csv_field(ev.get("run_id").and_then(|x| x.as_str()).unwrap_or(""));
+                let agent = csv_field(ev.get("agent_name").and_then(|x| x.as_str()).unwrap_or(""));
+                let model = csv_field(ev.get("model").and_then(|x| x.as_str()).unwrap_or(""));
+                let depth = ev.get("depth").and_then(|x| x.as_u64()).unwrap_or(0);
+                let dur = ev
+                    .get("duration_ms")
+                    .and_then(|x| x.as_u64())
+                    .map(|d| d.to_string())
+                    .unwrap_or_default();
+                let tok = ev
+                    .get("tokens_used")
+                    .and_then(|x| x.as_u64())
+                    .map(|t| t.to_string())
+                    .unwrap_or_default();
+                let cost = ev
+                    .get("cost_usd")
+                    .and_then(|x| x.as_f64())
+                    .map(|c| format!("{c:.6}"))
+                    .unwrap_or_default();
+                let success = ev
+                    .get("success")
+                    .and_then(|x| x.as_bool())
+                    .map(|s| if s { "true" } else { "false" })
+                    .unwrap_or("");
+                let ts = csv_field(ev.get("timestamp").and_then(|x| x.as_str()).unwrap_or(""));
+                println!("{run_id_col},{agent},{model},{depth},{dur},{tok},{cost},{success},{ts}");
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Return aggregate statistics from the delegation log, or `None` if the
 /// log does not exist or contains no parseable run data.
@@ -827,5 +919,52 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let ts = summary.latest_run_time.expect("should have latest_run_time");
         assert_eq!(ts.format("%Y-%m-%d").to_string(), "2026-01-03");
+    }
+
+    #[test]
+    fn csv_field_passthrough_for_plain_strings() {
+        assert_eq!(csv_field("hello"), "hello");
+        assert_eq!(csv_field("claude-sonnet-4"), "claude-sonnet-4");
+    }
+
+    #[test]
+    fn csv_field_wraps_strings_containing_commas() {
+        assert_eq!(csv_field("a,b"), "\"a,b\"");
+    }
+
+    #[test]
+    fn csv_field_escapes_embedded_double_quotes() {
+        assert_eq!(csv_field("say \"hi\""), "\"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn print_export_jsonl_on_missing_log_produces_no_error() {
+        let path = std::env::temp_dir().join("zeroclaw_test_export_missing.jsonl");
+        let _ = std::fs::remove_file(&path);
+        assert!(print_export(&path, None, ExportFormat::Jsonl).is_ok());
+    }
+
+    #[test]
+    fn print_export_csv_filters_to_delegation_end_events() {
+        let path = std::env::temp_dir().join("zeroclaw_test_export_csv.jsonl");
+        let mut lines = Vec::new();
+        lines.push(serde_json::to_string(&make_start("run-e", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_end("run-e", "main", 0, "2026-01-01T10:00:05Z", 500, 0.001, true)).unwrap());
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_export(&path, None, ExportFormat::Csv);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_export_jsonl_run_filter_excludes_other_runs() {
+        let path = std::env::temp_dir().join("zeroclaw_test_export_filter.jsonl");
+        let mut lines = Vec::new();
+        lines.push(serde_json::to_string(&make_start("run-keep", "main", 0, "2026-01-01T10:00:00Z")).unwrap());
+        lines.push(serde_json::to_string(&make_start("run-skip", "other", 0, "2026-01-02T10:00:00Z")).unwrap());
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_export(&path, Some("run-keep"), ExportFormat::Jsonl);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
     }
 }
