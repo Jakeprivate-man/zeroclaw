@@ -297,7 +297,10 @@ def render() -> None:
               buttons are disabled when no real log data is available
             - **Log Health** — collapsible panel showing file size, run count,
               time range, and cumulative token/cost totals across all stored runs;
-              useful for verifying the rotation limit (max 100 runs by default)
+              includes a **Prune** action (keep-N number input + button) that
+              atomically removes old runs from the JSONL log, mirroring
+              `zeroclaw delegations prune --keep N`; the panel refreshes
+              automatically after pruning
             - **Live mode** — auto-refresh toggle (3 / 5 / 10 / 30s intervals)
               that re-reads the JSONL log and rerenders all charts; use while
               ZeroClaw is actively running to watch delegations appear in real time

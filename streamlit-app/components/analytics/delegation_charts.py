@@ -6,6 +6,7 @@ Uses the Matrix Green color theme (#5FAF87, #87D7AF) consistent with
 all other analytics components.
 """
 
+import json
 import os
 
 import streamlit as st
@@ -327,6 +328,64 @@ def render_timeline(run_id: Optional[str] = None) -> None:
     st.plotly_chart(fig, use_container_width=True)
 
 
+def _prune_runs(log_path: str, keep: int) -> tuple:
+    """Remove old runs from the JSONL log, keeping the `keep` most recent.
+
+    Reads every line, groups events by run_id, sorts runs newest-first
+    by earliest timestamp, then atomically rewrites the file retaining
+    only the `keep` most recent runs.  Events with no run_id are preserved.
+
+    Returns (pruned_run_count, removed_event_count, kept_event_count).
+    Returns (0, 0, 0) when the file does not exist or is empty.
+    """
+    if not os.path.exists(log_path):
+        return 0, 0, 0
+
+    events = []
+    with open(log_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+
+    if not events:
+        return 0, 0, 0
+
+    # Determine first-seen timestamp per run_id (ISO-8601 strings compare correctly).
+    run_first_ts: dict = {}
+    for ev in events:
+        rid = ev.get("run_id")
+        if not rid:
+            continue
+        ts = ev.get("timestamp", "")
+        if ts and (rid not in run_first_ts or ts < run_first_ts[rid]):
+            run_first_ts[rid] = ts
+
+    # Sort newest-first (descending ISO timestamp).
+    sorted_runs = sorted(run_first_ts.keys(), key=lambda r: run_first_ts[r], reverse=True)
+    total_runs = len(sorted_runs)
+
+    if total_runs <= keep:
+        return 0, 0, len(events)
+
+    prune_ids = set(sorted_runs[keep:])
+    kept = [e for e in events if e.get("run_id", "") not in prune_ids]
+    removed = len(events) - len(kept)
+
+    # Atomic write: write to .tmp sibling, then rename over original.
+    tmp_path = log_path + ".tmp"
+    with open(tmp_path, "w") as f:
+        for ev in kept:
+            f.write(json.dumps(ev) + "\n")
+    os.replace(tmp_path, log_path)
+
+    return len(prune_ids), removed, len(kept)
+
+
 def render_log_health() -> None:
     """Collapsible log health panel: file size, run count, time range, cumulative totals.
 
@@ -401,6 +460,42 @@ def render_log_health() -> None:
                 f"Newest run: {newest_ts}  \u2022  "
                 f"Avg cost/run: {avg_str}"
             )
+
+        # ── Prune controls (mirrors zeroclaw delegations prune) ──────────────
+        st.divider()
+        prune_col1, prune_col2, prune_col3 = st.columns([2, 1, 2])
+        with prune_col1:
+            prune_keep = int(st.number_input(
+                "Keep most recent runs",
+                min_value=0,
+                max_value=9999,
+                value=20,
+                step=1,
+                key="log_health_prune_keep",
+                help="Number of most-recent runs to retain; all older runs will be removed",
+            ))
+        with prune_col2:
+            to_remove = max(0, run_count - prune_keep)
+            if to_remove > 0:
+                st.caption(f"Removes **{to_remove}** old run(s)")
+            else:
+                st.caption("Nothing to prune")
+        with prune_col3:
+            if st.button(
+                "🗑 Prune old runs",
+                key="log_health_prune_btn",
+                disabled=(to_remove == 0),
+                help=f"Remove {to_remove} old run(s), keeping {prune_keep} most recent",
+            ):
+                pruned, removed_ev, kept_ev = _prune_runs(log_path, prune_keep)
+                if pruned > 0:
+                    st.success(
+                        f"Pruned {pruned} run(s) ({removed_ev} event(s) removed). "
+                        f"{prune_keep} run(s) / {kept_ev} event(s) remaining."
+                    )
+                    st.rerun()
+                else:
+                    st.info("Nothing to prune.")
 
 
 def render_agent_stats_table(run_id: Optional[str] = None) -> None:
