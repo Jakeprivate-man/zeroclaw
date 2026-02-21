@@ -23,38 +23,117 @@ use std::path::PathBuf;
 /// The `run_id` is a UUID generated at observer creation time. All events
 /// from a single process invocation share the same `run_id`, allowing the
 /// UI to display or filter delegations by run.
+///
+/// On construction the log file is pruned: if the number of distinct
+/// `run_id` values exceeds `max_runs`, the oldest runs are removed so the
+/// file never grows unboundedly. Set `max_runs = 0` to disable pruning.
 pub struct DelegationEventObserver {
     log_file: PathBuf,
     run_id: String,
+    max_runs: usize,
 }
 
 impl DelegationEventObserver {
-    /// Create a new delegation event logger.
+    /// Create a new delegation event logger with the default run limit (100 runs).
+    ///
+    /// On construction, runs older than the 100 most-recent are pruned from
+    /// the log file. Use [`with_max_runs`](Self::with_max_runs) to override
+    /// the limit, or set it to `0` to disable pruning entirely.
+    ///
+    /// # Arguments
+    ///
+    /// * `log_file` - Path to JSONL log file (created if it doesn't exist)
+    pub fn new(log_file: PathBuf) -> Self {
+        Self::with_max_runs(log_file, 100)
+    }
+
+    /// Create a new delegation event logger with a custom run retention limit.
     ///
     /// Generates a unique `run_id` (UUID v4) for this observer instance.
     /// All delegation events written by this observer will include the same `run_id`.
     ///
+    /// If the log file already contains more than `max_runs` distinct run IDs,
+    /// the oldest runs (by first-seen order in the file) are removed before
+    /// any new events are written. Set `max_runs = 0` to disable pruning.
+    ///
     /// # Arguments
     ///
-    /// * `log_file` - Path to JSONL log file (will be created if it doesn't exist)
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use std::path::PathBuf;
-    /// let observer = DelegationEventObserver::new(
-    ///     PathBuf::from(shellexpand::tilde("~/.zeroclaw/state/delegation.jsonl").as_ref())
-    /// );
-    /// ```
-    pub fn new(log_file: PathBuf) -> Self {
-        // Ensure parent directory exists
+    /// * `log_file`  - Path to JSONL log file (created if it doesn't exist)
+    /// * `max_runs`  - Maximum number of distinct runs to retain; `0` disables pruning
+    pub fn with_max_runs(log_file: PathBuf, max_runs: usize) -> Self {
         if let Some(parent) = log_file.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        Self {
+        let observer = Self {
             log_file,
             run_id: uuid::Uuid::new_v4().to_string(),
+            max_runs,
+        };
+        observer.prune_old_runs();
+        observer
+    }
+
+    /// Prune the JSONL log so that at most `max_runs` distinct run IDs are retained.
+    ///
+    /// Run IDs are ordered by first appearance in the file (oldest first). If the
+    /// count exceeds the limit, the oldest entries are dropped and the file is
+    /// rewritten atomically. This is a no-op when `max_runs == 0` or the file has
+    /// fewer runs than the limit.
+    fn prune_old_runs(&self) {
+        if self.max_runs == 0 {
+            return;
         }
+
+        let content = match std::fs::read_to_string(&self.log_file) {
+            Ok(c) if !c.is_empty() => c,
+            _ => return,
+        };
+
+        // Collect run_ids in first-seen order (oldest run at index 0)
+        let mut run_id_order: Vec<String> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        for line in content.lines() {
+            if let Ok(event) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(rid) = event.get("run_id").and_then(|v| v.as_str()) {
+                    let rid = rid.to_string();
+                    if seen.insert(rid.clone()) {
+                        run_id_order.push(rid);
+                    }
+                }
+            }
+        }
+
+        if run_id_order.len() <= self.max_runs {
+            return; // nothing to prune
+        }
+
+        // The oldest runs to remove are at the front of run_id_order
+        let drop_count = run_id_order.len() - self.max_runs;
+        let to_drop: std::collections::HashSet<String> =
+            run_id_order.into_iter().take(drop_count).collect();
+
+        // Rewrite file retaining only events from kept runs
+        let kept_lines: Vec<&str> = content
+            .lines()
+            .filter(|line| {
+                if let Ok(event) = serde_json::from_str::<serde_json::Value>(line) {
+                    if let Some(rid) = event.get("run_id").and_then(|v| v.as_str()) {
+                        return !to_drop.contains(rid);
+                    }
+                }
+                // Lines without a run_id are kept (e.g. future format extensions)
+                true
+            })
+            .collect();
+
+        let new_content = if kept_lines.is_empty() {
+            String::new()
+        } else {
+            kept_lines.join("\n") + "\n"
+        };
+
+        std::fs::write(&self.log_file, new_content).ok();
     }
 
     /// Return the run_id for this observer instance.
@@ -320,6 +399,139 @@ mod tests {
 
         let content = std::fs::read_to_string(temp_file.path()).unwrap_or_default();
         assert!(content.is_empty() || !content.contains("HeartbeatTick"));
+    }
+
+    // ── §9 Log rotation helpers ────────────────────────────────────────────
+
+    /// Write a single DelegationStart line with the given run_id directly to path.
+    fn write_run_event(path: &std::path::Path, run_id: &str, agent_name: &str) {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        let event = serde_json::json!({
+            "event_type": "DelegationStart",
+            "run_id": run_id,
+            "agent_name": agent_name,
+            "provider": "anthropic",
+            "model": "claude-sonnet-4",
+            "depth": 0,
+            "agentic": true,
+            "timestamp": "2026-01-01T00:00:00Z",
+        });
+        writeln!(file, "{}", serde_json::to_string(&event).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn prune_is_noop_when_under_limit() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path();
+
+        write_run_event(path, "run-aaa", "agent-a");
+        write_run_event(path, "run-bbb", "agent-b");
+
+        // 2 runs, max_runs=10 — nothing should be removed
+        let _obs = DelegationEventObserver::with_max_runs(path.to_path_buf(), 10);
+
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.contains("run-aaa"), "run-aaa should be preserved");
+        assert!(content.contains("run-bbb"), "run-bbb should be preserved");
+    }
+
+    #[test]
+    fn prune_drops_oldest_run_when_over_limit() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path();
+
+        write_run_event(path, "run-oldest", "agent-a");
+        write_run_event(path, "run-middle", "agent-b");
+        write_run_event(path, "run-newest", "agent-c");
+
+        // 3 runs, max_runs=2 — oldest must be dropped
+        let _obs = DelegationEventObserver::with_max_runs(path.to_path_buf(), 2);
+
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(!content.contains("run-oldest"), "oldest run must be pruned");
+        assert!(content.contains("run-middle"), "middle run must be preserved");
+        assert!(content.contains("run-newest"), "newest run must be preserved");
+    }
+
+    #[test]
+    fn prune_drops_multiple_oldest_runs() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path();
+
+        for i in 0..5usize {
+            write_run_event(path, &format!("run-{i:03}"), &format!("agent-{i}"));
+        }
+
+        // max_runs=2: only run-003 and run-004 (the two newest) should survive
+        let _obs = DelegationEventObserver::with_max_runs(path.to_path_buf(), 2);
+
+        let content = std::fs::read_to_string(path).unwrap();
+        for i in 0..3usize {
+            assert!(
+                !content.contains(&format!("run-{i:03}")),
+                "run-{i:03} should be pruned"
+            );
+        }
+        for i in 3..5usize {
+            assert!(
+                content.contains(&format!("run-{i:03}")),
+                "run-{i:03} should be preserved"
+            );
+        }
+    }
+
+    #[test]
+    fn prune_zero_disables_rotation() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path();
+
+        for i in 0..10usize {
+            write_run_event(path, &format!("run-{i:02}"), &format!("agent-{i}"));
+        }
+
+        // max_runs=0 means no pruning at all
+        let _obs = DelegationEventObserver::with_max_runs(path.to_path_buf(), 0);
+
+        let content = std::fs::read_to_string(path).unwrap();
+        for i in 0..10usize {
+            assert!(
+                content.contains(&format!("run-{i:02}")),
+                "run-{i:02} should not be pruned when max_runs=0"
+            );
+        }
+    }
+
+    #[test]
+    fn prune_on_empty_file_does_not_panic() {
+        let temp_file = NamedTempFile::new().unwrap();
+        // Just constructing with max_runs=5 on an empty file must not panic
+        let _obs = DelegationEventObserver::with_max_runs(temp_file.path().to_path_buf(), 5);
+    }
+
+    #[test]
+    fn prune_preserves_event_order_within_kept_runs() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path();
+
+        // run-old has 2 events; run-new has 1 event
+        write_run_event(path, "run-old", "agent-first");
+        write_run_event(path, "run-old", "agent-second");
+        write_run_event(path, "run-new", "agent-third");
+
+        // max_runs=1 — run-old is dropped; run-new and its single event survive
+        let _obs = DelegationEventObserver::with_max_runs(path.to_path_buf(), 1);
+
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(!content.contains("run-old"), "run-old must be pruned");
+        assert!(content.contains("run-new"), "run-new must be preserved");
+        // Only the one remaining line from run-new should be present
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 1, "exactly one line should remain");
     }
 
     #[test]
