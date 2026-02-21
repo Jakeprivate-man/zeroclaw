@@ -6,6 +6,8 @@ Uses the Matrix Green color theme (#5FAF87, #87D7AF) consistent with
 all other analytics components.
 """
 
+import os
+
 import streamlit as st
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
@@ -317,3 +319,79 @@ def render_timeline(run_id: Optional[str] = None) -> None:
         ),
     )
     st.plotly_chart(fig, use_container_width=True)
+
+
+def render_log_health() -> None:
+    """Collapsible log health panel: file size, run count, time range, cumulative totals.
+
+    Shows at a glance whether the log file exists, how large it is, how many
+    runs are stored, the time range they span, and aggregate token/cost totals.
+    Useful after Phase 9 rotation to verify the file is bounded as expected.
+    """
+    with st.expander("📋 Log Health", expanded=False):
+        parser = DelegationParser()
+        log_path = parser.log_file
+
+        if not os.path.exists(log_path):
+            st.caption(f"Log file not found: `{log_path}`")
+            st.info(
+                "No delegation events have been recorded yet. "
+                "Run ZeroClaw with a workflow that uses the `delegate` tool."
+            )
+            return
+
+        # File size
+        raw_bytes = os.path.getsize(log_path)
+        if raw_bytes < 1024:
+            size_str = f"{raw_bytes} B"
+        elif raw_bytes < 1024 * 1024:
+            size_str = f"{raw_bytes / 1024:.1f} KB"
+        else:
+            size_str = f"{raw_bytes / (1024 * 1024):.2f} MB"
+
+        # Run-level stats
+        runs = parser.list_runs()
+        run_count = len(runs)
+        total_delegations = sum(r.total_delegations for r in runs)
+
+        # Cumulative token/cost from all nodes across all runs
+        all_nodes = _collect_all_nodes(parser)
+        total_tokens = sum(n.tokens_used for n in all_nodes if n.tokens_used is not None)
+        total_cost = sum(n.cost_usd for n in all_nodes if n.cost_usd is not None)
+        avg_cost_per_run = total_cost / run_count if run_count > 0 else 0.0
+
+        st.caption(f"Log: `{log_path}`")
+
+        col1, col2, col3, col4, col5 = st.columns(5)
+        with col1:
+            st.metric("File size", size_str, help="Size of delegation.jsonl on disk")
+        with col2:
+            st.metric("Runs stored", run_count,
+                      help="Distinct run_id values in the log (bounded by max_runs rotation)")
+        with col3:
+            st.metric("Delegations", total_delegations,
+                      help="Total DelegationStart events across all stored runs")
+        with col4:
+            st.metric(
+                "Total tokens",
+                f"{total_tokens:,}" if total_tokens > 0 else "—",
+                help="Cumulative tokens across all stored delegation ends",
+            )
+        with col5:
+            st.metric(
+                "Total cost",
+                f"${total_cost:.4f}" if total_cost > 0 else "—",
+                help="Cumulative USD cost across all stored delegation ends",
+            )
+
+        if run_count > 0:
+            newest = runs[0]
+            oldest = runs[-1]
+            newest_ts = newest.start_time.strftime("%Y-%m-%d %H:%M") if newest.start_time else "?"
+            oldest_ts = oldest.start_time.strftime("%Y-%m-%d %H:%M") if oldest.start_time else "?"
+            avg_str = f"${avg_cost_per_run:.4f}" if avg_cost_per_run > 0 else "—"
+            st.caption(
+                f"Oldest run: {oldest_ts}  \u2022  "
+                f"Newest run: {newest_ts}  \u2022  "
+                f"Avg cost/run: {avg_str}"
+            )

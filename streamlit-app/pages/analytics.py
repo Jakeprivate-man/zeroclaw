@@ -186,6 +186,9 @@ def render() -> None:
 
         st.divider()
 
+        # Log health panel (collapsible)
+        delegation_charts.render_log_health()
+
         # Delegation summary metrics
         delegation_tree.render_delegation_summary()
 
@@ -244,6 +247,9 @@ def render() -> None:
 
             - **Cross-run charts** — cost per run, token breakdown by model, depth
               distribution, and success/failure rates across all historical runs
+            - **Log Health** — collapsible panel showing file size, run count,
+              time range, and cumulative token/cost totals across all stored runs;
+              useful for verifying the rotation limit (max 100 runs by default)
             - **Live mode** — auto-refresh toggle (3 / 5 / 10 / 30s intervals)
               that re-reads the JSONL log and rerenders all charts; use while
               ZeroClaw is actively running to watch delegations appear in real time
