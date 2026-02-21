@@ -189,12 +189,15 @@ def render() -> None:
         # Log health panel (collapsible)
         delegation_charts.render_log_health()
 
-        # Delegation summary metrics
-        delegation_tree.render_delegation_summary()
+        # Shared run selector — controls summary, timeline, and tree simultaneously
+        selected_run_id = delegation_charts.render_run_selector()
+
+        # Delegation summary metrics (scoped to selected run)
+        delegation_tree.render_delegation_summary(run_id=selected_run_id)
 
         st.divider()
 
-        # Cross-run analytics charts
+        # Cross-run analytics charts (always show full history, unaffected by selector)
         st.markdown("#### Cross-Run Analytics")
         chart_col1, chart_col2 = st.columns(2)
         with chart_col1:
@@ -208,13 +211,18 @@ def render() -> None:
         with chart_col4:
             delegation_charts.render_success_rate_by_depth()
 
-        # Timeline waterfall (full width — most recent run)
-        delegation_charts.render_timeline()
+        # Timeline waterfall (scoped to selected run)
+        delegation_charts.render_timeline(run_id=selected_run_id)
 
         st.divider()
 
-        # Delegation tree visualization (real data from JSONL)
-        delegation_tree.render_delegation_tree(use_mock_data=False)
+        # Delegation tree (scoped to selected run; suppress internal selector
+        # when a specific run is already chosen from the shared selector above)
+        delegation_tree.render_delegation_tree(
+            run_id=selected_run_id,
+            show_run_selector=(selected_run_id is None),
+            use_mock_data=False,
+        )
 
         # Live mode: record render time, sleep, then rerun
         if live_mode:
@@ -256,7 +264,9 @@ def render() -> None:
             - **Timeline waterfall** — Gantt-style chart showing each delegation
               as a horizontal bar positioned by actual start/end timestamps;
               makes concurrency and relative duration immediately visible
-            - **Run Selector** — filter the tree to a single process invocation
+            - **Shared Run Selector** — single dropdown above the summary that
+              synchronises the summary metrics, timeline waterfall, and delegation
+              tree to one process invocation; cross-run charts are unaffected
             - **Delegation Tree** — hierarchical agent → sub-agent view with status,
               duration, tokens, and cost per node
             - **Prometheus metrics** — `zeroclaw_delegations_total`,
