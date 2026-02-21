@@ -381,6 +381,23 @@ Examples:
         config_command: ConfigCommands,
     },
 
+    /// Inspect agent delegation history from the local log
+    #[command(long_about = "\
+Inspect agent delegation history from the local log.
+
+Reads `~/.zeroclaw/state/delegation.jsonl` and prints summaries,
+run lists, and per-run delegation trees without starting the agent.
+
+Examples:
+  zeroclaw delegations               # overall summary
+  zeroclaw delegations list          # all runs, newest first
+  zeroclaw delegations show          # tree for most recent run
+  zeroclaw delegations show --run <id>  # tree for a specific run")]
+    Delegations {
+        #[command(subcommand)]
+        delegation_command: Option<DelegationCommands>,
+    },
+
     /// Generate shell completion script to stdout
     #[command(long_about = "\
 Generate shell completion scripts for `zeroclaw`.
@@ -395,6 +412,18 @@ Examples:
         /// Target shell
         #[arg(value_enum)]
         shell: CompletionShell,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum DelegationCommands {
+    /// List all stored runs, newest first
+    List,
+    /// Show delegation tree for a run (default: most recent)
+    Show {
+        /// Run ID to display (default: most recent run)
+        #[arg(long)]
+        run: Option<String>,
     },
 }
 
@@ -950,6 +979,21 @@ async fn main() -> Result<()> {
                 Ok(())
             }
         },
+
+        Commands::Delegations { delegation_command } => {
+            let log_path = std::path::PathBuf::from(
+                shellexpand::tilde("~/.zeroclaw/state/delegation.jsonl").as_ref(),
+            );
+            match delegation_command {
+                None => observability::delegation_report::print_summary(&log_path),
+                Some(DelegationCommands::List) => {
+                    observability::delegation_report::print_runs(&log_path)
+                }
+                Some(DelegationCommands::Show { run }) => {
+                    observability::delegation_report::print_tree(&log_path, run.as_deref())
+                }
+            }
+        }
     }
 }
 

@@ -1,4 +1,5 @@
 pub mod delegation_logger;
+pub mod delegation_report;
 pub mod delegation_stats;
 pub mod log;
 pub mod multi;
