@@ -211,6 +211,9 @@ def render() -> None:
         with chart_col4:
             delegation_charts.render_success_rate_by_depth()
 
+        # Run Comparison (mirrors zeroclaw delegations diff)
+        delegation_charts.render_run_diff()
+
         # Agent breakdown charts (scoped to selected run when set)
         st.markdown("#### Agent Breakdown")
         agent_col1, agent_col2 = st.columns(2)
@@ -276,6 +279,11 @@ def render() -> None:
               delegation count, ended count, success %, average duration, total tokens,
               and total cost; mirrors `zeroclaw delegations stats`; scoped by the
               shared run selector
+            - **Run Comparison** — side-by-side grouped bar charts (tokens and cost
+              per agent) comparing two independently selected runs; four aggregate
+              Δ metrics show the net change in total tokens and cost between runs;
+              mirrors `zeroclaw delegations diff`; falls back to a mock example
+              when fewer than two real runs are stored
             - **Export buttons** — Download CSV or JSONL of real delegation data;
               CSV columns match `zeroclaw delegations export --format csv`; JSONL
               contains raw event lines; both are scoped to the selected run when set;

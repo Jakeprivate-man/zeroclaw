@@ -611,6 +611,204 @@ def render_cost_by_agent(run_id: Optional[str] = None) -> None:
     st.plotly_chart(fig, use_container_width=True)
 
 
+def render_run_diff() -> None:
+    """Side-by-side run comparison — tokens and cost per agent for two selected runs.
+
+    Mirrors ``zeroclaw delegations diff <run_a> <run_b>`` as a visual chart pair.
+    Renders its own independent pair of run selectors (not tied to the shared
+    run selector above) so users can compare any two stored runs at any time.
+
+    When fewer than two real runs exist the charts show a synthetic mock example.
+    When the same run is selected for both A and B a warning is shown instead.
+    """
+    st.markdown("#### Run Comparison")
+
+    parser = DelegationParser()
+    runs = parser.list_runs()
+
+    # ── Run pair selectors ─────────────────────────────────────────────────
+    use_mock = len(runs) < 2
+
+    if use_mock:
+        st.caption("Fewer than 2 runs available — showing mock example")
+        run_a_id: Optional[str] = None
+        run_b_id: Optional[str] = None
+        run_a_label = "Run A (mock)"
+        run_b_label = "Run B (mock)"
+    else:
+        options = [r.label for r in runs]
+        sel_col1, sel_col2 = st.columns(2)
+        with sel_col1:
+            label_a = st.selectbox(
+                "Baseline (A)",
+                options=options,
+                index=0,
+                key="delegation_diff_run_a",
+                help="Baseline run for comparison",
+            )
+        with sel_col2:
+            label_b = st.selectbox(
+                "Compare (B)",
+                options=options,
+                index=min(1, len(options) - 1),
+                key="delegation_diff_run_b",
+                help="Run to compare against the baseline",
+            )
+        run_a_id = next((r.run_id for r in runs if r.label == label_a), None)
+        run_b_id = next((r.run_id for r in runs if r.label == label_b), None)
+        run_a_label = f"A [{run_a_id[:8]}…]" if run_a_id else "A"
+        run_b_label = f"B [{run_b_id[:8]}…]" if run_b_id else "B"
+
+        if run_a_id and run_b_id and run_a_id == run_b_id:
+            st.warning("Select two different runs to see a meaningful comparison.")
+            return
+
+    # ── Collect per-agent aggregates for each run ──────────────────────────
+    if use_mock:
+        agents     = ["main", "research", "codebase_analyzer", "doc_analyzer"]
+        tok_a_vals = [3800, 2400, 800, 600]
+        tok_b_vals = [4200, 2800, 700, 900]
+        cost_a_vals = [0.0114, 0.0072, 0.0024, 0.0018]
+        cost_b_vals = [0.0126, 0.0084, 0.0021, 0.0027]
+    else:
+        def _agent_agg(rid: Optional[str]) -> dict:
+            nodes = []
+            real_roots = parser.parse_delegation_tree(rid)
+            def _walk(n: DelegationNode) -> None:
+                nodes.append(n)
+                for c in n.children:
+                    _walk(c)
+            for root in real_roots:
+                _walk(root)
+            agg: dict = {}
+            for node in nodes:
+                name = node.agent_name
+                if name not in agg:
+                    agg[name] = {"tokens": 0, "cost": 0.0}
+                if node.tokens_used is not None:
+                    agg[name]["tokens"] += node.tokens_used
+                if node.cost_usd is not None:
+                    agg[name]["cost"] += node.cost_usd
+            return agg
+
+        agg_a = _agent_agg(run_a_id)
+        agg_b = _agent_agg(run_b_id)
+
+        all_agents = sorted(
+            set(agg_a.keys()) | set(agg_b.keys()),
+            key=lambda n: (agg_a.get(n, {}).get("tokens", 0)
+                           + agg_b.get(n, {}).get("tokens", 0)),
+            reverse=True,
+        )
+        if not all_agents:
+            st.caption("No completed delegation data for the selected runs.")
+            return
+
+        agents      = all_agents
+        tok_a_vals  = [agg_a.get(n, {}).get("tokens", 0) for n in agents]
+        tok_b_vals  = [agg_b.get(n, {}).get("tokens", 0) for n in agents]
+        cost_a_vals = [agg_a.get(n, {}).get("cost", 0.0) for n in agents]
+        cost_b_vals = [agg_b.get(n, {}).get("cost", 0.0) for n in agents]
+
+    # Reverse for bottom-up display in horizontal bar charts
+    agents_rev      = agents[::-1]
+    tok_a_rev       = tok_a_vals[::-1]
+    tok_b_rev       = tok_b_vals[::-1]
+    cost_a_rev      = cost_a_vals[::-1]
+    cost_b_rev      = cost_b_vals[::-1]
+
+    # ── Charts ─────────────────────────────────────────────────────────────
+    chart_col1, chart_col2 = st.columns(2)
+
+    with chart_col1:
+        fig_tok = go.Figure([
+            go.Bar(
+                name=run_a_label,
+                y=agents_rev,
+                x=tok_a_rev,
+                orientation="h",
+                marker_color=_GREEN_PRIMARY,
+                hovertemplate="%{y}<br>%{fullData.name}: %{x:,} tokens<extra></extra>",
+            ),
+            go.Bar(
+                name=run_b_label,
+                y=agents_rev,
+                x=tok_b_rev,
+                orientation="h",
+                marker_color=_GREEN_LIGHT,
+                hovertemplate="%{y}<br>%{fullData.name}: %{x:,} tokens<extra></extra>",
+            ),
+        ])
+        fig_tok.update_layout(
+            **_PLOTLY_LAYOUT,
+            barmode="group",
+            title="Tokens by Agent — A vs B",
+            xaxis_title="Tokens",
+            yaxis_title="Agent",
+            legend=dict(font=dict(color=_GREEN_PRIMARY)),
+        )
+        st.plotly_chart(fig_tok, use_container_width=True)
+
+    with chart_col2:
+        fig_cost = go.Figure([
+            go.Bar(
+                name=run_a_label,
+                y=agents_rev,
+                x=cost_a_rev,
+                orientation="h",
+                marker_color=_GREEN_PRIMARY,
+                hovertemplate="%{y}<br>%{fullData.name}: $%{x:.4f}<extra></extra>",
+            ),
+            go.Bar(
+                name=run_b_label,
+                y=agents_rev,
+                x=cost_b_rev,
+                orientation="h",
+                marker_color=_GREEN_LIGHT,
+                hovertemplate="%{y}<br>%{fullData.name}: $%{x:.4f}<extra></extra>",
+            ),
+        ])
+        fig_cost.update_layout(
+            **_PLOTLY_LAYOUT,
+            barmode="group",
+            title="Cost (USD) by Agent — A vs B",
+            xaxis_title="Cost (USD)",
+            yaxis_title="Agent",
+            legend=dict(font=dict(color=_GREEN_PRIMARY)),
+        )
+        st.plotly_chart(fig_cost, use_container_width=True)
+
+    # ── Aggregate delta metrics ────────────────────────────────────────────
+    total_tok_a  = sum(tok_a_vals)
+    total_tok_b  = sum(tok_b_vals)
+    total_cost_a = sum(cost_a_vals)
+    total_cost_b = sum(cost_b_vals)
+    delta_tok    = total_tok_b - total_tok_a
+    delta_cost   = total_cost_b - total_cost_a
+
+    def _signed_tok(v: int) -> str:
+        return f"+{v:,}" if v > 0 else f"{v:,}"
+
+    def _signed_cost(v: float) -> str:
+        if v > 0.000_05:
+            return f"+${v:.4f}"
+        if v < -0.000_05:
+            return f"-${abs(v):.4f}"
+        return "$0.0000"
+
+    met_col1, met_col2, met_col3, met_col4 = st.columns(4)
+    with met_col1:
+        st.metric(f"Total tokens {run_a_label}", f"{total_tok_a:,}" if total_tok_a else "—")
+    with met_col2:
+        st.metric(f"Total tokens {run_b_label}", f"{total_tok_b:,}" if total_tok_b else "—",
+                  delta=_signed_tok(delta_tok) if (total_tok_a or total_tok_b) else None)
+    with met_col3:
+        st.metric(f"Total cost {run_a_label}", f"${total_cost_a:.4f}" if total_cost_a else "—")
+    with met_col4:
+        st.metric(f"Total cost {run_b_label}", f"${total_cost_b:.4f}" if total_cost_b else "—",
+                  delta=_signed_cost(delta_cost) if (total_cost_a or total_cost_b) else None)
+
+
 def render_export_buttons(run_id: Optional[str] = None) -> None:
     """CSV and JSONL download buttons for delegation data.
 
