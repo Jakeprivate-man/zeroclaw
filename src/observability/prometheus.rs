@@ -197,6 +197,27 @@ impl Observer for PrometheusObserver {
             } => {
                 self.errors.with_label_values(&[component]).inc();
             }
+            ObserverEvent::DelegationStart {
+                agent_name: _,
+                provider: _,
+                model: _,
+                depth: _,
+                agentic: _,
+            } => {
+                // DelegationStart doesn't record metrics; only DelegationEnd does
+            }
+            ObserverEvent::DelegationEnd {
+                agent_name: _,
+                provider: _,
+                model: _,
+                depth: _,
+                duration: _,
+                success: _,
+                error_message: _,
+            } => {
+                // Delegation metrics could be added here in the future
+                // For now, delegation visibility is primarily through log/otel observers
+            }
         }
     }
 

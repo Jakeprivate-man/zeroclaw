@@ -331,6 +331,60 @@ impl Observer for OtelObserver {
                 self.errors
                     .add(1, &[KeyValue::new("component", component.clone())]);
             }
+            ObserverEvent::DelegationStart {
+                agent_name,
+                provider,
+                model,
+                depth,
+                agentic,
+            } => {
+                // Record delegation start with relevant context
+                // No need to create a span here; span will be created on DelegationEnd
+                let _attrs = [
+                    KeyValue::new("agent_name", agent_name.clone()),
+                    KeyValue::new("provider", provider.clone()),
+                    KeyValue::new("model", model.clone()),
+                    KeyValue::new("depth", *depth as i64),
+                    KeyValue::new("agentic", *agentic),
+                ];
+                // Could increment a delegation counter here if needed
+            }
+            ObserverEvent::DelegationEnd {
+                agent_name,
+                provider,
+                model,
+                depth,
+                duration,
+                success,
+                error_message: _,
+            } => {
+                let secs = duration.as_secs_f64();
+                let start_time = SystemTime::now()
+                    .checked_sub(*duration)
+                    .unwrap_or(SystemTime::now());
+
+                let status = if *success {
+                    Status::Ok
+                } else {
+                    Status::error("")
+                };
+
+                let mut span = tracer.build(
+                    opentelemetry::trace::SpanBuilder::from_name("delegation")
+                        .with_kind(SpanKind::Internal)
+                        .with_start_time(start_time)
+                        .with_attributes(vec![
+                            KeyValue::new("agent_name", agent_name.clone()),
+                            KeyValue::new("provider", provider.clone()),
+                            KeyValue::new("model", model.clone()),
+                            KeyValue::new("depth", *depth as i64),
+                            KeyValue::new("success", *success),
+                            KeyValue::new("duration_s", secs),
+                        ]),
+                );
+                span.set_status(status);
+                span.end();
+            }
         }
     }
 

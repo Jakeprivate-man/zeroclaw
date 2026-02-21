@@ -33,6 +33,10 @@ pub struct DelegateTool {
     parent_tools: Arc<Vec<Arc<dyn Tool>>>,
     /// Inherited multimodal handling config for sub-agent loops.
     multimodal_config: crate::config::MultimodalConfig,
+    /// Parent observer for forwarding child agent events.
+    /// When present, child agent events are forwarded to this observer
+    /// instead of being discarded, enabling delegation tree visibility.
+    parent_observer: Option<Arc<dyn Observer>>,
 }
 
 impl DelegateTool {
@@ -63,6 +67,7 @@ impl DelegateTool {
             depth: 0,
             parent_tools: Arc::new(Vec::new()),
             multimodal_config: crate::config::MultimodalConfig::default(),
+            parent_observer: None,
         }
     }
 
@@ -99,7 +104,18 @@ impl DelegateTool {
             depth,
             parent_tools: Arc::new(Vec::new()),
             multimodal_config: crate::config::MultimodalConfig::default(),
+            parent_observer: None,
         }
+    }
+
+    /// Attach parent observer for forwarding child agent events.
+    ///
+    /// When a parent observer is attached, child agents will forward
+    /// their events to this observer instead of discarding them,
+    /// enabling visibility into nested agent execution.
+    pub fn with_parent_observer(mut self, observer: Arc<dyn Observer>) -> Self {
+        self.parent_observer = Some(observer);
+        self
     }
 
     /// Attach parent tools used to build sub-agent allowlist registries.
@@ -390,15 +406,36 @@ impl DelegateTool {
         }
         history.push(ChatMessage::user(full_prompt.to_string()));
 
-        let noop_observer = NoopObserver;
+        // Use ForwardingObserver if parent observer is available, otherwise NoopObserver
+        let observer: Box<dyn Observer> = if let Some(parent) = &self.parent_observer {
+            Box::new(ForwardingObserver::new(
+                parent.clone(),
+                agent_name.to_string(),
+                self.depth + 1,
+            ))
+        } else {
+            Box::new(NoopObserver)
+        };
 
+        // Emit DelegationStart event
+        if let Some(parent) = &self.parent_observer {
+            parent.record_event(&ObserverEvent::DelegationStart {
+                agent_name: agent_name.to_string(),
+                provider: agent_config.provider.clone(),
+                model: agent_config.model.clone(),
+                depth: self.depth + 1,
+                agentic: true,
+            });
+        }
+
+        let start_time = std::time::Instant::now();
         let result = tokio::time::timeout(
             Duration::from_secs(DELEGATE_AGENTIC_TIMEOUT_SECS),
             run_tool_call_loop(
                 provider,
                 &mut history,
                 &sub_tools,
-                &noop_observer,
+                &*observer,
                 &agent_config.provider,
                 &agent_config.model,
                 temperature,
@@ -413,7 +450,8 @@ impl DelegateTool {
         )
         .await;
 
-        match result {
+        let duration = start_time.elapsed();
+        let tool_result = match result {
             Ok(Ok(response)) => {
                 let rendered = if response.trim().is_empty() {
                     "[Empty response]".to_string()
@@ -443,7 +481,22 @@ impl DelegateTool {
                     "Agent '{agent_name}' timed out after {DELEGATE_AGENTIC_TIMEOUT_SECS}s"
                 )),
             }),
+        };
+
+        // Emit DelegationEnd event
+        if let Some(parent) = &self.parent_observer {
+            parent.record_event(&ObserverEvent::DelegationEnd {
+                agent_name: agent_name.to_string(),
+                provider: agent_config.provider.clone(),
+                model: agent_config.model.clone(),
+                depth: self.depth + 1,
+                duration,
+                success: tool_result.as_ref().map(|r| r.success).unwrap_or(false),
+                error_message: tool_result.as_ref().ok().and_then(|r| r.error.clone()),
+            });
         }
+
+        tool_result
     }
 }
 
@@ -476,6 +529,51 @@ impl Tool for ToolArcRef {
     }
 }
 
+/// Observer that forwards events from child agents to a parent observer,
+/// enabling visibility into nested agent execution hierarchies.
+///
+/// When a child agent executes via DelegateTool, all of its events
+/// (LLM calls, tool executions, errors) are forwarded to the parent
+/// observer instead of being discarded. This enables complete tracking
+/// of delegation chains and their outcomes.
+struct ForwardingObserver {
+    parent: Arc<dyn Observer>,
+    agent_name: String,
+    depth: u32,
+}
+
+impl ForwardingObserver {
+    fn new(parent: Arc<dyn Observer>, agent_name: String, depth: u32) -> Self {
+        Self {
+            parent,
+            agent_name,
+            depth,
+        }
+    }
+}
+
+impl Observer for ForwardingObserver {
+    fn record_event(&self, event: &ObserverEvent) {
+        // Forward all child events to parent observer
+        self.parent.record_event(event);
+    }
+
+    fn record_metric(&self, metric: &ObserverMetric) {
+        // Forward all child metrics to parent observer
+        self.parent.record_metric(metric);
+    }
+
+    fn name(&self) -> &str {
+        "forwarding"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Fallback observer that discards all events when no parent observer is available.
+/// This is used when DelegateTool is created without a parent observer attached.
 struct NoopObserver;
 
 impl Observer for NoopObserver {
