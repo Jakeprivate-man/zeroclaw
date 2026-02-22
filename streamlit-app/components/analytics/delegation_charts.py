@@ -4358,6 +4358,91 @@ def render_token_efficiency_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_success_breakdown_table(run_id: Optional[str] = None) -> None:
+    """Table — delegation outcomes (succeeded vs. failed) with share%, tokens, cost.
+
+    When ``run_id`` is given the table is scoped to that single run;
+    otherwise it aggregates across all stored runs.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` means all runs.
+    """
+    st.subheader("Success Breakdown")
+
+    _OUTCOMES = ["succeeded", "failed"]
+    # buckets[i] = (count, tokens, cost)
+    buckets: list[list] = [[0, 0, 0.0], [0, 0, 0.0]]
+    total_delegations = 0
+
+    log_path = _delegation_log_path()
+    if log_path.exists():
+        with log_path.open() as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    ev = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if ev.get("event_type") != "DelegationEnd":
+                    continue
+                if run_id and ev.get("run_id") != run_id:
+                    continue
+                total_delegations += 1
+                success = bool(ev.get("success", False))
+                tokens = int(ev.get("tokens_used", 0) or 0)
+                cost = float(ev.get("cost_usd", 0.0) or 0.0)
+                idx = 0 if success else 1
+                buckets[idx][0] += 1
+                buckets[idx][1] += tokens
+                buckets[idx][2] += cost
+    else:
+        # Mock data: realistic ~92% success rate
+        buckets = [[276, 1_840_000, 34.6920], [24, 158_000, 2.9740]]
+        total_delegations = 300
+
+    total_cost = sum(b[2] for b in buckets)
+    total_success = buckets[0][0]
+
+    rows = []
+    populated = 0
+    for label, (count, tokens, cost) in zip(_OUTCOMES, buckets):
+        if count == 0:
+            continue
+        populated += 1
+        share = 100.0 * count / total_delegations if total_delegations > 0 else 0.0
+        rows.append({
+            "Outcome": label,
+            "Count": count,
+            "Share%": f"{share:.1f}%",
+            "Tokens": tokens,
+            "Cost ($)": f"{cost:.4f}",
+        })
+
+    if not rows:
+        st.info("No delegation events found.")
+        return
+
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Outcome": st.column_config.TextColumn("Outcome", width="small"),
+            "Count": st.column_config.NumberColumn("Count", format="%d"),
+            "Share%": st.column_config.TextColumn("Share%", width="small"),
+            "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+            "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
+        },
+    )
+    st.caption(
+        f"{populated} outcome(s) present  \u2022  {total_delegations} total delegations  "
+        f"\u2022  {total_success} succeeded  \u2022  ${total_cost:.4f} total cost"
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
