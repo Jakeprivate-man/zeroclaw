@@ -303,6 +303,9 @@ def render() -> None:
         # ISO week breakdown table (scoped to selected run when set)
         delegation_charts.render_weekly_table(run_id=selected_run_id)
 
+        # Depth bucket histogram table (scoped to selected run when set)
+        delegation_charts.render_depth_bucket_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
