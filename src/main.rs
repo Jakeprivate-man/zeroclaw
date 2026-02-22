@@ -944,6 +944,12 @@ Examples:
         #[arg(long)]
         run: Option<String>,
     },
+    /// Histogram of delegations grouped by token-usage bucket (0–99, 100–999, 1k–9.9k, 10k–99.9k, 100k+)
+    TokenBucket {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
 Compare per-agent delegation statistics between two runs side-by-side.
@@ -1685,6 +1691,12 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::DurationBucket { run }) => {
                     observability::delegation_report::print_duration_bucket(
+                        &log_path,
+                        run.as_deref(),
+                    )
+                }
+                Some(DelegationCommands::TokenBucket { run }) => {
+                    observability::delegation_report::print_token_bucket(
                         &log_path,
                         run.as_deref(),
                     )
