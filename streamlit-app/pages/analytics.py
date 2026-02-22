@@ -276,6 +276,9 @@ def render() -> None:
         # Monthly breakdown table — per-calendar-month aggregation (scoped to selected run when set)
         delegation_charts.render_monthly_breakdown_table(run_id=selected_run_id)
 
+        # Quarterly breakdown table — per-calendar-quarter aggregation (scoped to selected run when set)
+        delegation_charts.render_quarterly_breakdown_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
@@ -442,6 +445,14 @@ def render() -> None:
               successes, and cumulative cost; mirrors `zeroclaw delegations monthly`;
               scoped by the shared run selector; shows a mock example when no real
               log data is available
+            - **Quarterly Breakdown table** — groups all completed delegations by UTC
+              calendar quarter (YYYY-QN, oldest first); quarter boundaries are
+              Jan–Mar = Q1, Apr–Jun = Q2, Jul–Sep = Q3, Oct–Dec = Q4; columns show
+              quarter, delegation count, success percentage, cumulative tokens, and
+              cumulative cost; a caption line below summarises total quarters, total
+              delegations, successes, and cumulative cost; mirrors
+              `zeroclaw delegations quarterly`; scoped by the shared run selector;
+              shows a mock example when no real log data is available
             - **Agent Leaderboard** — horizontal bar chart ranking all agents by
               cumulative tokens or cost across every stored run; rank-by and top-N
               controls mirror `zeroclaw delegations top`; falls back to a mock
