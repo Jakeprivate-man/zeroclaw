@@ -5767,6 +5767,103 @@ def render_provider_duration_rank_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_run_duration_rank_table(run_id: Optional[str] = None) -> None:
+    """Table — runs ranked by avg duration per delegation (slowest first).
+
+    Answers "which run was slowest per call?" — the run-level view of the
+    duration-rank series alongside agent-, model-, and provider-duration-rank.
+    Events without duration_ms are skipped.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` means all runs.
+    """
+    st.subheader("Run Duration Rank")
+
+    # run_id → [count, success_count, total_duration_ms, cost]
+    run_map: dict = {}
+
+    log_path = _delegation_log_path()
+    if log_path.exists():
+        with log_path.open() as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    ev = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if ev.get("event_type") != "DelegationEnd":
+                    continue
+                rid = ev.get("run_id") or "unknown"
+                if run_id and rid != run_id:
+                    continue
+                duration_ms = ev.get("duration_ms")
+                if duration_ms is None:
+                    continue
+                success = bool(ev.get("success", False))
+                cost = float(ev.get("cost_usd", 0.0) or 0.0)
+                if rid not in run_map:
+                    run_map[rid] = [0, 0, 0, 0.0]
+                run_map[rid][0] += 1
+                if success:
+                    run_map[rid][1] += 1
+                run_map[rid][2] += int(duration_ms)
+                run_map[rid][3] += cost
+    else:
+        # Mock data: three runs with distinct avg-duration profiles
+        run_map = {
+            "run-alpha": [30,  29,  1_800_000, 18.0000],
+            "run-beta":  [60,  58,  1_200_000, 12.0000],
+            "run-gamma": [80,  80,    240_000,  2.4000],
+        }
+
+    if not run_map:
+        st.info("No delegation events found.")
+        return
+
+    rows = []
+    for rid, (count, ok, total_dur, cost) in run_map.items():
+        avg_dur_ms = total_dur / count if count > 0 else 0.0
+        avg_cost = cost / count if count > 0 else 0.0
+        ok_pct = 100.0 * ok / count if count > 0 else 0.0
+        rows.append({
+            "Run": rid,
+            "Delegations": count,
+            "Avg Duration (ms)": round(avg_dur_ms),
+            "Avg Cost ($)": f"{avg_cost:.4f}",
+            "Ok%": f"{ok_pct:.1f}%",
+            "Total Duration (ms)": total_dur,
+        })
+    # Sort: avg_dur desc, ties by run_id asc
+    rows.sort(key=lambda r: (-r["Avg Duration (ms)"], r["Run"]))
+    for i, r in enumerate(rows, 1):
+        r["#"] = i
+
+    total_delegations = sum(v[0] for v in run_map.values())
+    total_duration_ms = sum(v[2] for v in run_map.values())
+
+    df = pd.DataFrame(rows, columns=["#", "Run", "Delegations", "Avg Duration (ms)", "Avg Cost ($)", "Ok%", "Total Duration (ms)"])
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+            "Run": st.column_config.TextColumn("Run"),
+            "Delegations": st.column_config.NumberColumn("Delegations", format="%d"),
+            "Avg Duration (ms)": st.column_config.NumberColumn("Avg Duration (ms)", format="%d"),
+            "Avg Cost ($)": st.column_config.TextColumn("Avg Cost ($)", width="small"),
+            "Ok%": st.column_config.TextColumn("Ok%", width="small"),
+            "Total Duration (ms)": st.column_config.NumberColumn("Total Duration (ms)", format="%d"),
+        },
+    )
+    st.caption(
+        f"{len(rows)} run(s)  \u2022  {total_delegations} total delegations  "
+        f"\u2022  {total_duration_ms:,}ms total duration"
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
