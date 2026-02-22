@@ -5197,6 +5197,100 @@ def render_agent_token_rank_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_model_token_rank_table(run_id: Optional[str] = None) -> None:
+    """Table — models ranked by avg tokens per delegation (most token-hungry first).
+
+    Answers "which model consumes the most tokens per call?" — continues the
+    token-rank trio alongside agent-token-rank and provider-token-rank.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` means all runs.
+    """
+    st.subheader("Model Token Rank")
+
+    # model → [count, success_count, tokens, cost]
+    model_map: dict = {}
+
+    log_path = _delegation_log_path()
+    if log_path.exists():
+        with log_path.open() as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    ev = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if ev.get("event_type") != "DelegationEnd":
+                    continue
+                if run_id and ev.get("run_id") != run_id:
+                    continue
+                model = ev.get("model") or "unknown"
+                success = bool(ev.get("success", False))
+                tokens = int(ev.get("tokens_used", 0) or 0)
+                cost = float(ev.get("cost_usd", 0.0) or 0.0)
+                if model not in model_map:
+                    model_map[model] = [0, 0, 0, 0.0]
+                model_map[model][0] += 1
+                if success:
+                    model_map[model][1] += 1
+                model_map[model][2] += tokens
+                model_map[model][3] += cost
+    else:
+        # Mock data: three models with distinct avg-token profiles
+        model_map = {
+            "claude-opus-4-5":   [50, 48, 1_000_000, 60.0000],
+            "claude-sonnet-4-5": [90, 87,   900_000, 27.0000],
+            "claude-haiku-4-5":  [60, 59,   180_000,  3.0000],
+        }
+
+    if not model_map:
+        st.info("No delegation events found.")
+        return
+
+    rows = []
+    for model, (count, ok, tokens, cost) in model_map.items():
+        avg_tokens = tokens / count if count > 0 else 0.0
+        avg_cost = cost / count if count > 0 else 0.0
+        ok_pct = 100.0 * ok / count if count > 0 else 0.0
+        rows.append({
+            "Model": model,
+            "Delegations": count,
+            "Avg Tokens": round(avg_tokens),
+            "Avg Cost ($)": f"{avg_cost:.4f}",
+            "Ok%": f"{ok_pct:.1f}%",
+            "Total Tokens": tokens,
+        })
+    # Sort: avg_tok desc, ties by model name asc
+    rows.sort(key=lambda r: (-r["Avg Tokens"], r["Model"]))
+    for i, r in enumerate(rows, 1):
+        r["#"] = i
+
+    total_delegations = sum(v[0] for v in model_map.values())
+    total_tokens = sum(v[2] for v in model_map.values())
+
+    df = pd.DataFrame(rows, columns=["#", "Model", "Delegations", "Avg Tokens", "Avg Cost ($)", "Ok%", "Total Tokens"])
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+            "Model": st.column_config.TextColumn("Model"),
+            "Delegations": st.column_config.NumberColumn("Delegations", format="%d"),
+            "Avg Tokens": st.column_config.NumberColumn("Avg Tokens", format="%d"),
+            "Avg Cost ($)": st.column_config.TextColumn("Avg Cost ($)", width="small"),
+            "Ok%": st.column_config.TextColumn("Ok%", width="small"),
+            "Total Tokens": st.column_config.NumberColumn("Total Tokens", format="%d"),
+        },
+    )
+    st.caption(
+        f"{len(rows)} model(s)  \u2022  {total_delegations} total delegations  "
+        f"\u2022  {total_tokens:,} total tokens"
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
