@@ -427,7 +427,9 @@ Examples:
   zeroclaw delegations model claude-sonnet-4 --run <id>   # history within one run
   zeroclaw delegations provider anthropic             # history for provider
   zeroclaw delegations provider anthropic --run <id>  # history within one run
-  zeroclaw delegations run <id>                        # full chronological report for one run")]
+  zeroclaw delegations run <id>                        # full chronological report for one run
+  zeroclaw delegations depth-view 0                   # all root-level delegations, newest first
+  zeroclaw delegations depth-view 1 --run <id>        # depth-1 delegations for one run")]
     Delegations {
         #[command(subcommand)]
         delegation_command: Option<DelegationCommands>,
@@ -749,6 +751,32 @@ Examples:
     Run {
         /// Run ID to report on (exact match)
         id: String,
+    },
+    /// Show all completed delegations at a specific nesting depth, newest first
+    #[command(long_about = "\
+Show every completed delegation at a specific nesting depth, sorted by finish
+timestamp descending (most recent first).  Only `DelegationEnd` events whose
+`depth` field equals <level> are shown.  Use `--run` to scope to a single
+invocation.
+
+Depth 0 = root-level delegations (orchestrated directly by the main agent).
+Depth 1 = sub-delegations spawned by depth-0 agents, and so on.
+
+Output columns: # | run | agent | duration | tokens | cost | ok | finished (UTC)
+
+The footer shows total occurrences, success count, cumulative tokens, and
+cumulative cost for the queried depth level.
+
+Examples:
+  zeroclaw delegations depth-view 0             # all root-level delegations
+  zeroclaw delegations depth-view 1             # all depth-1 sub-delegations
+  zeroclaw delegations depth-view 0 --run <id>  # root delegations for one run")]
+    DepthView {
+        /// Nesting depth level to filter (0 = root, 1 = sub-delegations, …)
+        level: u32,
+        /// Scope to a specific run ID (default: show all runs)
+        #[arg(long)]
+        run: Option<String>,
     },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
@@ -1451,6 +1479,13 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::Run { id }) => {
                     observability::delegation_report::print_run(&log_path, &id)
+                }
+                Some(DelegationCommands::DepthView { level, run }) => {
+                    observability::delegation_report::print_depth_view(
+                        &log_path,
+                        level,
+                        run.as_deref(),
+                    )
                 }
                 Some(DelegationCommands::Diff { run_a, run_b }) => {
                     observability::delegation_report::print_diff(
