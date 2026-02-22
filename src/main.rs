@@ -429,7 +429,9 @@ Examples:
   zeroclaw delegations provider anthropic --run <id>  # history within one run
   zeroclaw delegations run <id>                        # full chronological report for one run
   zeroclaw delegations depth-view 0                   # all root-level delegations, newest first
-  zeroclaw delegations depth-view 1 --run <id>        # depth-1 delegations for one run")]
+  zeroclaw delegations depth-view 1 --run <id>        # depth-1 delegations for one run
+  zeroclaw delegations daily                           # per-day breakdown across all runs
+  zeroclaw delegations daily --run <id>               # per-day breakdown for one run")]
     Delegations {
         #[command(subcommand)]
         delegation_command: Option<DelegationCommands>,
@@ -775,6 +777,25 @@ Examples:
         /// Nesting depth level to filter (0 = root, 1 = sub-delegations, …)
         level: u32,
         /// Scope to a specific run ID (default: show all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
+    /// Per-calendar-day delegation breakdown, oldest day first
+    #[command(long_about = "\
+Aggregate all completed delegations by UTC calendar date (YYYY-MM-DD),
+sorted oldest-first so the table reads chronologically.  Use `--run` to
+scope to a single run.
+
+Output columns: date | count | ok% | tokens | cost
+
+The footer shows total days, total delegation count, success count, and
+cumulative cost.
+
+Examples:
+  zeroclaw delegations daily              # all runs, per-day breakdown
+  zeroclaw delegations daily --run <id>   # one run only")]
+    Daily {
+        /// Scope to a specific run ID (default: aggregate across all runs)
         #[arg(long)]
         run: Option<String>,
     },
@@ -1486,6 +1507,9 @@ async fn main() -> Result<()> {
                         level,
                         run.as_deref(),
                     )
+                }
+                Some(DelegationCommands::Daily { run }) => {
+                    observability::delegation_report::print_daily(&log_path, run.as_deref())
                 }
                 Some(DelegationCommands::Diff { run_a, run_b }) => {
                     observability::delegation_report::print_diff(
