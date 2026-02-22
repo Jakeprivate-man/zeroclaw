@@ -415,7 +415,10 @@ Examples:
   zeroclaw delegations slow --limit 5  # top 5 slowest
   zeroclaw delegations slow --run <id>  # slowest within one run
   zeroclaw delegations cost          # per-run cost breakdown, most expensive first
-  zeroclaw delegations cost --run <id>  # cost breakdown for one run")]
+  zeroclaw delegations cost --run <id>  # cost breakdown for one run
+  zeroclaw delegations recent        # 10 most recently completed delegations
+  zeroclaw delegations recent --limit 5  # 5 most recent
+  zeroclaw delegations recent --run <id>  # most recent within one run")]
     Delegations {
         #[command(subcommand)]
         delegation_command: Option<DelegationCommands>,
@@ -609,6 +612,28 @@ Examples:
         /// Scope to a specific run ID (default: show all runs)
         #[arg(long)]
         run: Option<String>,
+    },
+    /// List the N most recently completed delegations, newest first
+    #[command(long_about = "\
+List the N most recently completed delegations from the log, sorted by finish
+timestamp descending (newest first). Only `DelegationEnd` events are shown.
+Use `--run` to scope to a single invocation. `--limit` controls how many rows
+to display (default: 10).
+
+Output columns: # | run (prefix) | agent | depth | duration | tokens | cost | finished (UTC)
+
+Examples:
+  zeroclaw delegations recent                        # 10 most recent across all runs
+  zeroclaw delegations recent --limit 5              # 5 most recent
+  zeroclaw delegations recent --run <id>             # most recent within one run
+  zeroclaw delegations recent --run <id> --limit 3   # top 3 most recent in one run")]
+    Recent {
+        /// Scope to a specific run ID (default: show all runs)
+        #[arg(long)]
+        run: Option<String>,
+        /// Number of rows to display (default: 10)
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
     },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
@@ -1289,6 +1314,9 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::Cost { run }) => {
                     observability::delegation_report::print_cost(&log_path, run.as_deref())
+                }
+                Some(DelegationCommands::Recent { run, limit }) => {
+                    observability::delegation_report::print_recent(&log_path, run.as_deref(), limit)
                 }
                 Some(DelegationCommands::Diff { run_a, run_b }) => {
                     observability::delegation_report::print_diff(
