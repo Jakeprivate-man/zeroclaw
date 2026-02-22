@@ -249,6 +249,9 @@ def render() -> None:
         # Recent table — N most recently completed delegations, newest first
         delegation_charts.render_recent_table(run_id=selected_run_id)
 
+        # Active table — currently in-flight delegations (scoped to selected run when set)
+        delegation_charts.render_active_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
@@ -339,6 +342,13 @@ def render() -> None:
               matches CLI `--limit`); columns show run prefix, agent, depth,
               duration, tokens, cost, and finish timestamp; mirrors
               `zeroclaw delegations recent`; scoped by the shared run selector
+            - **Active (In-Flight) Delegations table** — rows for delegations
+              that have a `DelegationStart` event but no matching `DelegationEnd`;
+              FIFO matching per (run_id, agent_name, depth) key handles concurrent
+              same-agent delegations correctly; sorted oldest-start first; columns
+              show run prefix, agent, depth, start timestamp, and elapsed time;
+              mirrors `zeroclaw delegations active`; scoped by the shared run
+              selector; shows a mock example when no real log data is available
             - **Agent Leaderboard** — horizontal bar chart ranking all agents by
               cumulative tokens or cost across every stored run; rank-by and top-N
               controls mirror `zeroclaw delegations top`; falls back to a mock
