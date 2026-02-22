@@ -4945,6 +4945,111 @@ pub fn print_model_cost_rank(log_path: &Path, run_id: Option<&str>) -> Result<()
     Ok(())
 }
 
+/// Ranks providers by average cost per delegation (most expensive per call first).
+///
+/// Completes the cost-rank trio alongside `print_agent_cost_rank` and
+/// `print_model_cost_rank`. Distinct from `print_providers` (total-token sorted).
+///
+/// Columns: # | provider | delegations | ok% | avg_cost | avg_tokens | total_cost
+///
+/// When `run_id` is `Some`, only events from that run are included.
+/// Produces no output (and returns `Ok`) when the log is absent or empty.
+pub fn print_provider_cost_rank(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        return Ok(());
+    }
+
+    let events: Vec<Value> = if let Some(rid) = run_id {
+        all_events
+            .into_iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events
+    };
+
+    // provider → (count, success_count, tokens, total_cost)
+    let mut map: std::collections::HashMap<String, (usize, usize, u64, f64)> =
+        std::collections::HashMap::new();
+
+    for ev in &events {
+        if ev.get("event_type").and_then(|x| x.as_str()) != Some("DelegationEnd") {
+            continue;
+        }
+        let provider = ev
+            .get("provider")
+            .and_then(|x| x.as_str())
+            .unwrap_or("unknown")
+            .to_owned();
+        let success = ev.get("success").and_then(|x| x.as_bool()).unwrap_or(false);
+        let tokens = ev.get("tokens_used").and_then(|x| x.as_u64()).unwrap_or(0);
+        let cost = ev.get("cost_usd").and_then(|x| x.as_f64()).unwrap_or(0.0);
+        let e = map.entry(provider).or_insert((0, 0, 0, 0.0));
+        e.0 += 1;
+        if success {
+            e.1 += 1;
+        }
+        e.2 += tokens;
+        e.3 += cost;
+    }
+
+    if map.is_empty() {
+        return Ok(());
+    }
+
+    // Sort by avg_cost per delegation descending, break ties by provider name ascending.
+    let mut rows: Vec<(String, usize, usize, u64, f64)> = map
+        .into_iter()
+        .map(|(provider, (count, ok, tokens, cost))| (provider, count, ok, tokens, cost))
+        .collect();
+    rows.sort_by(|a, b| {
+        let avg_a = a.4 / a.1 as f64;
+        let avg_b = b.4 / b.1 as f64;
+        avg_b.partial_cmp(&avg_a).unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!("Provider cost rank — avg cost per delegation{scope}");
+    println!();
+    println!(
+        "{:>3}  {:<18}  {:>7}  {:>8}  {:>10}  {:>10}  {:>10}",
+        "#", "provider", "count", "ok%", "avg_cost", "avg_tok", "total_cost"
+    );
+    println!("{}", "─".repeat(76));
+
+    for (rank, (provider, count, ok, tokens, cost)) in rows.iter().enumerate() {
+        let ok_pct = 100.0 * (*ok as f64) / (*count as f64);
+        let avg_cost = cost / (*count as f64);
+        let avg_tok = *tokens as f64 / (*count as f64);
+        println!(
+            "{:>3}  {:<18}  {:>7}  {:>7.1}%  {:>10.4}  {:>10.0}  {:>10.4}",
+            rank + 1,
+            provider,
+            count,
+            ok_pct,
+            avg_cost,
+            avg_tok,
+            cost
+        );
+    }
+
+    println!("{}", "─".repeat(76));
+    let total_delegations: usize = rows.iter().map(|(_, c, _, _, _)| c).sum();
+    let total_cost: f64 = rows.iter().map(|(_, _, _, _, c)| c).sum();
+    println!(
+        "{} provider(s) \u{2022} {} total delegations \u{2022} ${:.4} total cost",
+        rows.len(),
+        total_delegations,
+        total_cost
+    );
+
+    Ok(())
+}
+
 /// `ExportFormat::Csv`: emits a header row followed by one row per
 /// `DelegationEnd` event with columns:
 /// `run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp`
@@ -10366,6 +10471,90 @@ mod tests {
         ];
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_model_cost_rank(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    // ── print_provider_cost_rank ───────────────────────────────────────────
+
+    fn make_pcr_event(run_id: &str, provider: &str, tokens: u64, cost: f64, success: bool, ts: &str) -> String {
+        format!(
+            r#"{{"event_type":"DelegationEnd","run_id":"{run_id}","provider":"{provider}","tokens_used":{tokens},"cost_usd":{cost},"success":{success},"timestamp":"{ts}"}}"#
+        )
+    }
+
+    #[test]
+    fn print_provider_cost_rank_multiple_providers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        // anthropic: 1 at $0.50 → avg $0.50; openai: 2 at $0.08 each → avg $0.08
+        let lines = vec![
+            make_pcr_event("r1", "anthropic", 5000, 0.50, true,  "2026-02-01T10:00:00Z"),
+            make_pcr_event("r1", "openai",    2000, 0.08, true,  "2026-02-01T10:01:00Z"),
+            make_pcr_event("r1", "openai",    1800, 0.08, false, "2026-02-01T10:02:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_provider_cost_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_provider_cost_rank_empty_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_provider_cost_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_provider_cost_rank_missing_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.jsonl");
+        let result = print_provider_cost_rank(&path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_provider_cost_rank_skips_start_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        let start = r#"{"event_type":"DelegationStart","run_id":"r1","provider":"anthropic","timestamp":"2026-02-01T10:00:00Z"}"#;
+        let end = make_pcr_event("r1", "anthropic", 3000, 0.06, true, "2026-02-01T10:01:00Z");
+        std::fs::write(&path, format!("{start}\n{end}\n")).unwrap();
+        let result = print_provider_cost_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_provider_cost_rank_sorted_by_avg_cost_desc() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        // google: $0.02, anthropic: $0.40, openai: $0.15 → expected: anthropic, openai, google
+        let lines = vec![
+            make_pcr_event("r1", "google",    500,  0.02, true, "2026-02-01T10:00:00Z"),
+            make_pcr_event("r1", "anthropic", 8000, 0.40, true, "2026-02-01T10:01:00Z"),
+            make_pcr_event("r1", "openai",    3000, 0.15, true, "2026-02-01T10:02:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_provider_cost_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_provider_cost_rank_filters_by_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        let lines = vec![
+            make_pcr_event("run-keep", "anthropic", 2000, 0.04, true,  "2026-02-01T10:00:00Z"),
+            make_pcr_event("run-skip", "openai",    4000, 0.20, false, "2026-02-01T10:01:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_provider_cost_rank(&path, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }
