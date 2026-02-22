@@ -1288,6 +1288,120 @@ def render_recent_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_active_table(run_id: Optional[str] = None) -> None:
+    """Currently in-flight delegations table.
+
+    Mirrors ``zeroclaw delegations active [--run <id>]`` as an interactive
+    Streamlit dataframe. Shows ``DelegationStart`` events that have no matching
+    ``DelegationEnd``, using FIFO matching per (run_id, agent_name, depth) key.
+    Rows are sorted oldest-start first so the longest-running delegation appears
+    at the top. The elapsed column shows how long each delegation has been
+    running based on the current wall-clock time.
+
+    Columns: # | Run | Agent | Depth | Started | Elapsed
+
+    Falls back to a synthetic mock example when no real data is present.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` aggregates all runs.
+    """
+    import pandas as pd
+    from collections import defaultdict
+
+    scope = f"[{run_id[:8]}…]" if run_id is not None else "(all runs)"
+    st.markdown(f"#### Active (In-Flight) Delegations {scope}")
+
+    parser = DelegationParser()
+    events = parser._read_events(run_id)
+
+    if not events:
+        st.caption("No delegation data available — showing mock example")
+        rows = [
+            {
+                "#": 1,
+                "Run": "abc12345",
+                "Agent": "research",
+                "Depth": 1,
+                "Started": "2026-02-22 10:30:00",
+                "Elapsed": "12s",
+            },
+        ]
+        df = pd.DataFrame(rows)
+    else:
+        # FIFO match starts to ends per (run_id, agent_name, depth) key.
+        start_queues: dict = defaultdict(list)
+        end_counts: dict = defaultdict(int)
+
+        for ev in events:
+            etype = ev.get("event_type", "")
+            rid = ev.get("run_id", "")
+            agent = ev.get("agent_name", "")
+            depth = int(ev.get("depth", 0))
+            key = (rid, agent, depth)
+            if etype == "DelegationStart":
+                start_queues[key].append(ev)
+            elif etype == "DelegationEnd":
+                end_counts[key] += 1
+
+        active: list = []
+        for key, starts in start_queues.items():
+            matched = end_counts.get(key, 0)
+            for start in starts[matched:]:
+                active.append(start)
+
+        # Sort oldest-start first.
+        active.sort(key=lambda e: e.get("timestamp", ""))
+
+        if not active:
+            st.caption("No active (in-flight) delegations found.")
+            return
+
+        now = datetime.utcnow()
+        rows = []
+        for i, ev in enumerate(active, start=1):
+            run_prefix = (ev.get("run_id") or "")[:8]
+            ts_str = ev.get("timestamp", "")
+            started_str = "—"
+            elapsed_str = "—"
+            if ts_str:
+                try:
+                    started_dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    started_str = started_dt.strftime("%Y-%m-%d %H:%M:%S")
+                    secs = int((now - started_dt.replace(tzinfo=None)).total_seconds())
+                    secs = max(0, secs)
+                    if secs < 60:
+                        elapsed_str = f"{secs}s"
+                    elif secs < 3600:
+                        elapsed_str = f"{secs // 60}m{secs % 60}s"
+                    else:
+                        elapsed_str = f"{secs // 3600}h{(secs % 3600) // 60}m"
+                except ValueError:
+                    pass
+            rows.append({
+                "#": i,
+                "Run": run_prefix,
+                "Agent": ev.get("agent_name", "?"),
+                "Depth": int(ev.get("depth", 0)),
+                "Started": started_str,
+                "Elapsed": elapsed_str,
+            })
+        df = pd.DataFrame(rows)
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+            "Run": st.column_config.TextColumn("Run", width="small"),
+            "Agent": st.column_config.TextColumn("Agent", width="medium"),
+            "Depth": st.column_config.NumberColumn("Depth", format="%d", width="small"),
+            "Started": st.column_config.TextColumn("Started"),
+            "Elapsed": st.column_config.TextColumn("Elapsed", width="small"),
+        },
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
