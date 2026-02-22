@@ -240,6 +240,9 @@ def render() -> None:
         # Errors table — failed delegations only (scoped to selected run when set)
         delegation_charts.render_errors_table(run_id=selected_run_id)
 
+        # Slow table — N slowest delegations by duration (scoped to selected run when set)
+        delegation_charts.render_slow_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
@@ -314,6 +317,11 @@ def render() -> None:
               name, depth, duration, and full error message; mirrors
               `zeroclaw delegations errors`; scoped by the shared run selector;
               shows a mock example when no failures exist in the selected scope
+            - **Slowest Delegations table** — rows for the N slowest completed
+              delegations, sorted by duration descending; a number-input controls
+              how many rows to show (default: 10, matches CLI `--limit`); columns
+              show run prefix, agent, depth, duration in ms, tokens, and cost;
+              mirrors `zeroclaw delegations slow`; scoped by the shared run selector
             - **Agent Leaderboard** — horizontal bar chart ranking all agents by
               cumulative tokens or cost across every stored run; rank-by and top-N
               controls mirror `zeroclaw delegations top`; falls back to a mock

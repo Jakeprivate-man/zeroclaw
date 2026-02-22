@@ -957,6 +957,97 @@ def render_errors_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_slow_table(run_id: Optional[str] = None) -> None:
+    """Slowest-delegations table.
+
+    Mirrors ``zeroclaw delegations slow [--run <id>] [--limit N]`` as an
+    interactive Streamlit dataframe. Rows represent completed delegations
+    (``DelegationEnd`` events with a ``duration_ms`` value), sorted by
+    duration descending (slowest first). A number-input lets the user
+    control how many rows to display (default: 10, matches CLI default).
+
+    Columns: # | Run | Agent | Depth | Duration (ms) | Tokens | Cost ($)
+
+    Falls back to a synthetic mock example when no real data is present.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` aggregates all runs.
+    """
+    import pandas as pd
+
+    scope = f"[{run_id[:8]}…]" if run_id is not None else "(all runs)"
+    st.markdown(f"#### Slowest Delegations {scope}")
+
+    limit = int(st.number_input(
+        "Show top N slowest",
+        min_value=1,
+        max_value=200,
+        value=10,
+        step=1,
+        key="slow_table_limit",
+        help="Number of slowest delegations to display (mirrors --limit in CLI)",
+    ))
+
+    parser = DelegationParser()
+    nodes = _collect_all_nodes(parser, run_id)
+    timed = [n for n in nodes if n.is_complete and n.duration_ms is not None]
+
+    if not timed:
+        st.caption("No timed delegation data — showing mock example")
+        rows = [
+            {
+                "#": 1,
+                "Run": "abc12345",
+                "Agent": "main",
+                "Depth": 0,
+                "Duration (ms)": 5234,
+                "Tokens": 3800,
+                "Cost ($)": 0.0134,
+            },
+            {
+                "#": 2,
+                "Run": "abc12345",
+                "Agent": "research",
+                "Depth": 1,
+                "Duration (ms)": 3210,
+                "Tokens": 2400,
+                "Cost ($)": 0.0062,
+            },
+        ]
+        df = pd.DataFrame(rows[:limit])
+    else:
+        timed_sorted = sorted(timed, key=lambda n: n.duration_ms, reverse=True)  # type: ignore[arg-type]
+
+        rows = []
+        for i, node in enumerate(timed_sorted[:limit], start=1):
+            run_prefix = (node.run_id or "")[:8]
+            rows.append({
+                "#": i,
+                "Run": run_prefix,
+                "Agent": node.agent_name,
+                "Depth": node.depth,
+                "Duration (ms)": node.duration_ms,
+                "Tokens": node.tokens_used,
+                "Cost ($)": round(node.cost_usd, 6) if node.cost_usd is not None else None,
+            })
+        df = pd.DataFrame(rows)
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+            "Run": st.column_config.TextColumn("Run", width="small"),
+            "Agent": st.column_config.TextColumn("Agent", width="medium"),
+            "Depth": st.column_config.NumberColumn("Depth", format="%d", width="small"),
+            "Duration (ms)": st.column_config.NumberColumn("Duration (ms)", format="%d"),
+            "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+            "Cost ($)": st.column_config.NumberColumn("Cost ($)", format="$%.4f"),
+        },
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
