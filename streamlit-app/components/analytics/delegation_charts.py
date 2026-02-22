@@ -5481,6 +5481,102 @@ def render_agent_duration_rank_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_model_duration_rank_table(run_id: Optional[str] = None) -> None:
+    """Table — models ranked by avg duration per delegation (slowest first).
+
+    Answers "which model is slowest per call?" — continues the duration-rank trio
+    alongside agent-duration-rank and provider-duration-rank.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` means all runs.
+    """
+    st.subheader("Model Duration Rank")
+
+    # model → [count, success_count, total_duration_ms, cost]
+    model_map: dict = {}
+
+    log_path = _delegation_log_path()
+    if log_path.exists():
+        with log_path.open() as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    ev = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if ev.get("event_type") != "DelegationEnd":
+                    continue
+                if run_id and ev.get("run_id") != run_id:
+                    continue
+                duration_ms = ev.get("duration_ms")
+                if duration_ms is None:
+                    continue
+                model = ev.get("model") or "unknown"
+                success = bool(ev.get("success", False))
+                cost = float(ev.get("cost_usd", 0.0) or 0.0)
+                if model not in model_map:
+                    model_map[model] = [0, 0, 0, 0.0]
+                model_map[model][0] += 1
+                if success:
+                    model_map[model][1] += 1
+                model_map[model][2] += int(duration_ms)
+                model_map[model][3] += cost
+    else:
+        # Mock data: three models with distinct avg-duration profiles
+        model_map = {
+            "claude-opus-4-5":   [50, 48, 3_000_000, 60.0000],
+            "claude-sonnet-4-5": [90, 87, 1_800_000, 27.0000],
+            "claude-haiku-4-5":  [60, 59,   180_000,  3.0000],
+        }
+
+    if not model_map:
+        st.info("No delegation events found.")
+        return
+
+    rows = []
+    for model, (count, ok, total_dur, cost) in model_map.items():
+        avg_dur_ms = total_dur / count if count > 0 else 0.0
+        avg_cost = cost / count if count > 0 else 0.0
+        ok_pct = 100.0 * ok / count if count > 0 else 0.0
+        rows.append({
+            "Model": model,
+            "Delegations": count,
+            "Avg Duration (ms)": round(avg_dur_ms),
+            "Avg Cost ($)": f"{avg_cost:.4f}",
+            "Ok%": f"{ok_pct:.1f}%",
+            "Total Duration (ms)": total_dur,
+        })
+    # Sort: avg_dur desc, ties by model name asc
+    rows.sort(key=lambda r: (-r["Avg Duration (ms)"], r["Model"]))
+    for i, r in enumerate(rows, 1):
+        r["#"] = i
+
+    total_delegations = sum(v[0] for v in model_map.values())
+    total_duration_ms = sum(v[2] for v in model_map.values())
+
+    df = pd.DataFrame(rows, columns=["#", "Model", "Delegations", "Avg Duration (ms)", "Avg Cost ($)", "Ok%", "Total Duration (ms)"])
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+            "Model": st.column_config.TextColumn("Model"),
+            "Delegations": st.column_config.NumberColumn("Delegations", format="%d"),
+            "Avg Duration (ms)": st.column_config.NumberColumn("Avg Duration (ms)", format="%d"),
+            "Avg Cost ($)": st.column_config.TextColumn("Avg Cost ($)", width="small"),
+            "Ok%": st.column_config.TextColumn("Ok%", width="small"),
+            "Total Duration (ms)": st.column_config.NumberColumn("Total Duration (ms)", format="%d"),
+        },
+    )
+    st.caption(
+        f"{len(rows)} model(s)  \u2022  {total_delegations} total delegations  "
+        f"\u2022  {total_duration_ms:,}ms total duration"
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
