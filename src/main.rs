@@ -956,6 +956,12 @@ Examples:
         #[arg(long)]
         run: Option<String>,
     },
+    /// Breakdown of delegations by ISO weekday (Mon–Sun, UTC), showing which days are most active
+    Weekday {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
 Compare per-agent delegation statistics between two runs side-by-side.
@@ -1709,6 +1715,12 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::CostBucket { run }) => {
                     observability::delegation_report::print_cost_bucket(
+                        &log_path,
+                        run.as_deref(),
+                    )
+                }
+                Some(DelegationCommands::Weekday { run }) => {
+                    observability::delegation_report::print_weekday(
                         &log_path,
                         run.as_deref(),
                     )
