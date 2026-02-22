@@ -2349,6 +2349,146 @@ def render_daily_breakdown_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_hourly_breakdown_table(run_id: Optional[str] = None) -> None:
+    """Per-UTC-hour delegation breakdown table.
+
+    Mirrors ``zeroclaw delegations hourly [--run <id>]`` as a Streamlit
+    dataframe. Groups all completed delegations by UTC hour-of-day (00–23)
+    and shows aggregate statistics per hour, sorted lowest-hour first.
+
+    The hour key is extracted from characters 11–12 of the ISO-8601 timestamp
+    (e.g. the event at ``2026-01-15T14:30:00Z`` contributes to ``14:xx``).
+    Events from different dates with the same hour merge into the same bucket,
+    revealing peak-activity windows across the entire scope.
+
+    Like :func:`render_daily_breakdown_table`, this is an aggregate table with
+    no additional input control — scope comes from the shared run selector.
+
+    Columns: Hour (UTC) | Count | Ok% | Tokens | Cost ($)
+
+    A caption below the table summarises active hours, total delegations,
+    total successes, and cumulative cost — mirroring the CLI footer line.
+
+    Falls back to a synthetic mock example when no real data is present.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` aggregates all runs.
+    """
+    import pandas as pd
+
+    scope = f"[{run_id[:8]}…]" if run_id is not None else "(all runs)"
+    st.markdown(f"#### Hourly Delegation Breakdown {scope}")
+
+    parser = DelegationParser()
+    events = parser._read_events(run_id)
+
+    if not events:
+        st.caption("No delegation data available — showing mock example")
+        rows = [
+            {
+                "Hour (UTC)": "09:xx",
+                "Count": 8,
+                "Ok%": "100.0%",
+                "Tokens": 4_800,
+                "Cost ($)": "$0.0144",
+            },
+            {
+                "Hour (UTC)": "14:xx",
+                "Count": 15,
+                "Ok%": "93.3%",
+                "Tokens": 9_300,
+                "Cost ($)": "$0.0279",
+            },
+            {
+                "Hour (UTC)": "21:xx",
+                "Count": 6,
+                "Ok%": "83.3%",
+                "Tokens": 3_540,
+                "Cost ($)": "$0.0106",
+            },
+        ]
+        df = pd.DataFrame(rows)
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Hour (UTC)": st.column_config.TextColumn("Hour (UTC)", width="small"),
+                "Count": st.column_config.NumberColumn("Count", format="%d"),
+                "Ok%": st.column_config.TextColumn("Ok%", width="small"),
+                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
+            },
+        )
+        st.caption("3 hour(s) active • 29 total delegations • 27 succeeded • $0.0529 total cost (mock)")
+        return
+
+    # Collect completed delegations, group by UTC hour-of-day.
+    hour_stats: dict[str, list] = {}
+    # hour_stats[hour_str] = [count, success_count, tokens, cost]
+    for ev in events:
+        if ev.get("event_type") != "DelegationEnd":
+            continue
+        ts = ev.get("timestamp", "")
+        if len(ts) < 13:
+            continue
+        hour_str = ts[11:13]
+        ok = bool(ev.get("success", False))
+        tokens = int(ev.get("tokens_used") or 0)
+        cost = float(ev.get("cost_usd") or 0.0)
+        if hour_str not in hour_stats:
+            hour_stats[hour_str] = [0, 0, 0, 0.0]
+        hour_stats[hour_str][0] += 1
+        if ok:
+            hour_stats[hour_str][1] += 1
+        hour_stats[hour_str][2] += tokens
+        hour_stats[hour_str][3] += cost
+
+    if not hour_stats:
+        st.caption("No completed delegations found in the selected scope.")
+        return
+
+    # Sort lowest-hour first: two-digit strings "00"–"23" sort correctly.
+    sorted_hours = sorted(hour_stats.keys())
+
+    rows = []
+    total_delegations = 0
+    total_success = 0
+    total_cost = 0.0
+    for hour_str in sorted_hours:
+        count, success_count, tokens, cost = hour_stats[hour_str]
+        ok_pct = f"{100.0 * success_count / count:.1f}%" if count > 0 else "—"
+        rows.append({
+            "Hour (UTC)": f"{hour_str}:xx",
+            "Count": count,
+            "Ok%": ok_pct,
+            "Tokens": tokens,
+            "Cost ($)": f"${cost:.4f}",
+        })
+        total_delegations += count
+        total_success += success_count
+        total_cost += cost
+
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Hour (UTC)": st.column_config.TextColumn("Hour (UTC)", width="small"),
+            "Count": st.column_config.NumberColumn("Count", format="%d"),
+            "Ok%": st.column_config.TextColumn("Ok%", width="small"),
+            "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+            "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
+        },
+    )
+    n_hours = len(sorted_hours)
+    st.caption(
+        f"{n_hours} hour(s) active  •  {total_delegations} total delegations  "
+        f"•  {total_success} succeeded  •  ${total_cost:.4f} total cost"
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
