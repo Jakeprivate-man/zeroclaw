@@ -4724,6 +4724,100 @@ def render_provider_cost_rank_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_run_cost_rank_table(run_id: Optional[str] = None) -> None:
+    """Table — runs ranked by total cost (most expensive run first).
+
+    Answers "which run burned the most money?" — distinct from agent/model/provider
+    cost-rank (per-invocation average) and from agent-level top-volume ranking.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` means all runs.
+    """
+    st.subheader("Run Cost Rank")
+
+    # run_id → [count, success_count, tokens, cost]
+    run_map: dict = {}
+
+    log_path = _delegation_log_path()
+    if log_path.exists():
+        with log_path.open() as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    ev = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if ev.get("event_type") != "DelegationEnd":
+                    continue
+                rid = ev.get("run_id") or "unknown"
+                if run_id and rid != run_id:
+                    continue
+                success = bool(ev.get("success", False))
+                tokens = int(ev.get("tokens_used", 0) or 0)
+                cost = float(ev.get("cost_usd", 0.0) or 0.0)
+                if rid not in run_map:
+                    run_map[rid] = [0, 0, 0, 0.0]
+                run_map[rid][0] += 1
+                if success:
+                    run_map[rid][1] += 1
+                run_map[rid][2] += tokens
+                run_map[rid][3] += cost
+    else:
+        # Mock data: three runs with distinct total costs
+        run_map = {
+            "run-alpha": [120, 115, 900_000, 28.5000],
+            "run-beta":  [45,  42,  280_000, 12.8000],
+            "run-gamma": [35,  35,  100_000,  4.2000],
+        }
+
+    if not run_map:
+        st.info("No delegation events found.")
+        return
+
+    rows = []
+    for rid, (count, ok, tokens, cost) in run_map.items():
+        avg_cost = cost / count if count > 0 else 0.0
+        avg_tokens = tokens / count if count > 0 else 0.0
+        ok_pct = 100.0 * ok / count if count > 0 else 0.0
+        rows.append({
+            "Run": rid,
+            "Delegations": count,
+            "Ok%": f"{ok_pct:.1f}%",
+            "Avg Cost ($)": f"{avg_cost:.4f}",
+            "Avg Tokens": round(avg_tokens),
+            "Total Cost ($)": f"{cost:.4f}",
+        })
+    # Sort by total_cost desc, ties by run_id asc
+    rows.sort(key=lambda r: (-float(r["Total Cost ($)"]), r["Run"]))
+    for i, r in enumerate(rows, 1):
+        r["#"] = i
+
+    total_delegations = sum(v[0] for v in run_map.values())
+    total_cost = sum(v[3] for v in run_map.values())
+
+    df = pd.DataFrame(rows, columns=["#", "Run", "Delegations", "Ok%", "Avg Cost ($)", "Avg Tokens", "Total Cost ($)"])
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+            "Run": st.column_config.TextColumn("Run"),
+            "Delegations": st.column_config.NumberColumn("Delegations", format="%d"),
+            "Ok%": st.column_config.TextColumn("Ok%", width="small"),
+            "Avg Cost ($)": st.column_config.TextColumn("Avg Cost ($)", width="small"),
+            "Avg Tokens": st.column_config.NumberColumn("Avg Tokens", format="%d"),
+            "Total Cost ($)": st.column_config.TextColumn("Total Cost ($)", width="small"),
+        },
+    )
+    st.caption(
+        f"{len(rows)} run(s)  \u2022  {total_delegations} total delegations  "
+        f"\u2022  ${total_cost:.4f} total cost"
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
