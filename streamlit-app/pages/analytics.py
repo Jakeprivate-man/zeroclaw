@@ -237,6 +237,9 @@ def render() -> None:
         # Per-depth stats table (scoped to selected run when set)
         delegation_charts.render_depth_stats_table(run_id=selected_run_id)
 
+        # Errors table — failed delegations only (scoped to selected run when set)
+        delegation_charts.render_errors_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
@@ -306,6 +309,11 @@ def render() -> None:
               ascending by depth; mirrors `zeroclaw delegations depth`; scoped by the
               shared run selector; useful for understanding how deeply workflows nest
               and where token spend concentrates
+            - **Delegation Errors table** — rows for every failed delegation
+              (success=False), sorted oldest-first; columns show run prefix, agent
+              name, depth, duration, and full error message; mirrors
+              `zeroclaw delegations errors`; scoped by the shared run selector;
+              shows a mock example when no failures exist in the selected scope
             - **Agent Leaderboard** — horizontal bar chart ranking all agents by
               cumulative tokens or cost across every stored run; rank-by and top-N
               controls mirror `zeroclaw delegations top`; falls back to a mock

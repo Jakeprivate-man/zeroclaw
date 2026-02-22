@@ -871,6 +871,92 @@ def render_depth_stats_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_errors_table(run_id: Optional[str] = None) -> None:
+    """Failed-delegation errors table.
+
+    Mirrors ``zeroclaw delegations errors [--run <id>]`` as an interactive
+    Streamlit dataframe. Rows represent completed delegations where
+    ``success=False``, sorted oldest-first (ascending timestamp). Error
+    messages are shown in full (the CLI truncates to 80 chars; the UI can
+    afford the extra width).
+
+    Columns: # | Run | Agent | Depth | Duration | Error Message
+
+    Falls back to a synthetic mock example when no failures are found.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` aggregates all runs.
+    """
+    import pandas as pd
+
+    scope = f"[{run_id[:8]}…]" if run_id is not None else "(all runs)"
+    st.markdown(f"#### Delegation Errors {scope}")
+
+    parser = DelegationParser()
+    nodes = _collect_all_nodes(parser, run_id)
+    failed = [n for n in nodes if n.is_complete and not n.success]
+
+    if not failed:
+        st.caption("No failed delegations — showing mock example")
+        rows = [
+            {
+                "#": 1,
+                "Run": "abc12345",
+                "Agent": "research",
+                "Depth": 1,
+                "Duration": "3.21s",
+                "Error Message": "Tool call timed out after 30 s — no response from provider",
+            },
+            {
+                "#": 2,
+                "Run": "abc12345",
+                "Agent": "codebase_analyzer",
+                "Depth": 2,
+                "Duration": "0.89s",
+                "Error Message": "Rate limit exceeded: retry after 60 s",
+            },
+        ]
+        df = pd.DataFrame(rows)
+    else:
+        def _fmt_ms(ms: Optional[int]) -> str:
+            if ms is None:
+                return "—"
+            return f"{ms}ms" if ms < 1000 else f"{ms / 1000:.2f}s"
+
+        # Sort oldest failure first (mirrors CLI ascending timestamp order)
+        failed_sorted = sorted(
+            failed,
+            key=lambda n: n.start_time if n.start_time is not None else datetime.min,
+        )
+
+        rows = []
+        for i, node in enumerate(failed_sorted, start=1):
+            run_prefix = (node.run_id or "")[:8]
+            rows.append({
+                "#": i,
+                "Run": run_prefix,
+                "Agent": node.agent_name,
+                "Depth": node.depth,
+                "Duration": _fmt_ms(node.duration_ms),
+                "Error Message": node.error_message or "—",
+            })
+        df = pd.DataFrame(rows)
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+            "Run": st.column_config.TextColumn("Run", width="small"),
+            "Agent": st.column_config.TextColumn("Agent", width="medium"),
+            "Depth": st.column_config.NumberColumn("Depth", format="%d", width="small"),
+            "Duration": st.column_config.TextColumn("Duration", width="small"),
+            "Error Message": st.column_config.TextColumn("Error Message"),
+        },
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
