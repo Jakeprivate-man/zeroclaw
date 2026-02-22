@@ -3900,6 +3900,130 @@ pub fn print_weekday(log_path: &Path, run_id: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Aggregate completed delegations by ISO 8601 week (YYYY-WXX) and print a
+/// breakdown table, sorted oldest-week first.
+///
+/// Only `DelegationEnd` events are counted.  The week key is derived by
+/// parsing the RFC-3339 timestamp with chrono and calling `iso_week()`.
+/// Events with an unparseable timestamp are skipped.
+///
+/// Use `run_id` to scope to a single process invocation; `None` aggregates
+/// across every stored run.
+///
+/// Output columns: week | count | ok% | tokens | cost
+pub fn print_weekly(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    let events: Vec<&Value> = if let Some(rid) = run_id {
+        all_events
+            .iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events.iter().collect()
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    // Aggregate DelegationEnd events by ISO week key "YYYY-WXX".
+    let mut map: std::collections::BTreeMap<String, (usize, usize, u64, f64)> =
+        std::collections::BTreeMap::new();
+
+    for ev in &events {
+        if ev.get("event_type").and_then(|x| x.as_str()) != Some("DelegationEnd") {
+            continue;
+        }
+        let Some(ts) = ev.get("timestamp").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let Ok(dt) = DateTime::parse_from_rfc3339(ts) else {
+            continue;
+        };
+        let iw = dt.iso_week();
+        let key = format!("{}-W{:02}", iw.year(), iw.week());
+        let success = ev
+            .get("success")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+        let tokens = ev
+            .get("tokens_used")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        let cost = ev
+            .get("cost_usd")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0);
+        let entry = map.entry(key).or_insert((0usize, 0usize, 0u64, 0.0f64));
+        entry.0 += 1;
+        if success {
+            entry.1 += 1;
+        }
+        entry.2 += tokens;
+        entry.3 += cost;
+    }
+
+    if map.is_empty() {
+        println!("No completed delegations found.");
+        return Ok(());
+    }
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!("Weekly Delegation Breakdown{scope}");
+    println!();
+    println!(
+        "{:<9}  {:>7}  {:>8}  {:>10}  {:>10}",
+        "week", "count", "ok%", "tokens", "cost"
+    );
+    println!("{}", "\u{2500}".repeat(52));
+
+    let mut total_count = 0usize;
+    let mut total_success = 0usize;
+    let mut total_tokens: u64 = 0;
+    let mut total_cost: f64 = 0.0;
+
+    for (week, (count, success_count, tokens, cost)) in &map {
+        let ok_pct = format!("{:.1}%", 100.0 * (*success_count) as f64 / (*count) as f64);
+        let tok_str = if *tokens > 0 {
+            tokens.to_string()
+        } else {
+            "\u{2014}".to_owned()
+        };
+        let cost_str = if *cost > 0.0 {
+            format!("${cost:.4}")
+        } else {
+            "\u{2014}".to_owned()
+        };
+        println!(
+            "{:<9}  {:>7}  {:>8}  {:>10}  {:>10}",
+            week, count, ok_pct, tok_str, cost_str,
+        );
+        total_count += count;
+        total_success += success_count;
+        total_tokens += tokens;
+        total_cost += cost;
+    }
+
+    println!("{}", "\u{2500}".repeat(52));
+    println!(
+        "{} week(s)  \u{2022}  {} total delegations  \u{2022}  {} succeeded  \u{2022}  ${:.4} total cost",
+        map.len(),
+        total_count,
+        total_success,
+        total_cost,
+    );
+    Ok(())
+}
+
 /// `ExportFormat::Csv`: emits a header row followed by one row per
 /// `DelegationEnd` event with columns:
 /// `run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp`
@@ -8203,6 +8327,119 @@ mod tests {
         }
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_weekday(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    // ── print_weekly tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn print_weekly_missing_log() {
+        let path =
+            std::path::PathBuf::from("/tmp/zeroclaw_no_such_file_weekly.jsonl");
+        let result = print_weekly(&path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_weekly_empty_log() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_weekly_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_weekly(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_weekly_no_ends() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_weekly_noends.jsonl");
+        let ev = serde_json::json!({
+            "event_type": "DelegationStart",
+            "run_id": "run-1",
+            "agent_name": "researcher",
+            "timestamp": "2026-02-23T10:00:00Z",
+        });
+        std::fs::write(&path, serde_json::to_string(&ev).unwrap() + "\n").unwrap();
+        let result = print_weekly(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_weekly_groups_by_week() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_weekly_groups.jsonl");
+        let mut lines = Vec::new();
+        // 2026-01-05 = 2026-W02, 2026-01-12 = 2026-W03
+        for ts in &["2026-01-05T10:00:00Z", "2026-01-12T10:00:00Z"] {
+            let ev = serde_json::json!({
+                "event_type": "DelegationEnd",
+                "run_id": "run-1",
+                "agent_name": "researcher",
+                "duration_ms": 1000u64,
+                "tokens_used": 500u64,
+                "cost_usd": 0.005f64,
+                "success": true,
+                "timestamp": ts,
+            });
+            lines.push(serde_json::to_string(&ev).unwrap());
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_weekly(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_weekly_same_week_aggregated() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_weekly_same_week.jsonl");
+        let mut lines = Vec::new();
+        // 2026-02-23 (Mon) and 2026-02-27 (Fri) are both in 2026-W09
+        for ts in &["2026-02-23T10:00:00Z", "2026-02-27T10:00:00Z"] {
+            let ev = serde_json::json!({
+                "event_type": "DelegationEnd",
+                "run_id": "run-1",
+                "agent_name": "researcher",
+                "duration_ms": 1000u64,
+                "tokens_used": 300u64,
+                "cost_usd": 0.003f64,
+                "success": true,
+                "timestamp": ts,
+            });
+            lines.push(serde_json::to_string(&ev).unwrap());
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_weekly(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_weekly_filters_by_run() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_weekly_runfilter.jsonl");
+        let mut lines = Vec::new();
+        for (run, ts) in &[
+            ("run-keep", "2026-02-09T10:00:00Z"),
+            ("run-skip", "2026-02-23T10:00:00Z"),
+        ] {
+            let ev = serde_json::json!({
+                "event_type": "DelegationEnd",
+                "run_id": run,
+                "agent_name": "researcher",
+                "duration_ms": 1000u64,
+                "tokens_used": 500u64,
+                "cost_usd": 0.005f64,
+                "success": true,
+                "timestamp": ts,
+            });
+            lines.push(serde_json::to_string(&ev).unwrap());
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_weekly(&path, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }
