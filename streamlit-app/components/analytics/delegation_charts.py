@@ -5008,6 +5008,101 @@ def render_model_success_rank_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_provider_success_rank_table(run_id: Optional[str] = None) -> None:
+    """Table — providers ranked by success rate (most reliable first).
+
+    Answers "which provider is most reliable?" — completes the success-rank trio
+    alongside agent-success-rank and model-success-rank.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` means all runs.
+    """
+    st.subheader("Provider Success Rank")
+
+    # provider → [count, success_count, tokens, cost]
+    provider_map: dict = {}
+
+    log_path = _delegation_log_path()
+    if log_path.exists():
+        with log_path.open() as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    ev = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if ev.get("event_type") != "DelegationEnd":
+                    continue
+                if run_id and ev.get("run_id") != run_id:
+                    continue
+                provider = ev.get("provider") or "unknown"
+                success = bool(ev.get("success", False))
+                tokens = int(ev.get("tokens_used", 0) or 0)
+                cost = float(ev.get("cost_usd", 0.0) or 0.0)
+                if provider not in provider_map:
+                    provider_map[provider] = [0, 0, 0, 0.0]
+                provider_map[provider][0] += 1
+                if success:
+                    provider_map[provider][1] += 1
+                provider_map[provider][2] += tokens
+                provider_map[provider][3] += cost
+    else:
+        # Mock data: three providers with distinct success rates
+        provider_map = {
+            "google":    [10,  10,   40_000,  0.2000],
+            "anthropic": [160, 155, 1_180_000, 64.0000],
+            "openai":    [30,  26,   120_000,   4.5000],
+        }
+
+    if not provider_map:
+        st.info("No delegation events found.")
+        return
+
+    rows = []
+    for provider, (count, ok, tokens, cost) in provider_map.items():
+        failures = count - ok
+        avg_cost = cost / count if count > 0 else 0.0
+        avg_tokens = tokens / count if count > 0 else 0.0
+        ok_pct = 100.0 * ok / count if count > 0 else 0.0
+        rows.append({
+            "Provider": provider,
+            "Delegations": count,
+            "Ok%": f"{ok_pct:.1f}%",
+            "Failures": failures,
+            "Avg Cost ($)": f"{avg_cost:.4f}",
+            "Avg Tokens": round(avg_tokens),
+        })
+    # Sort: ok_pct desc, ties by delegations desc, then provider asc
+    rows.sort(key=lambda r: (-float(r["Ok%"].rstrip("%")), -r["Delegations"], r["Provider"]))
+    for i, r in enumerate(rows, 1):
+        r["#"] = i
+
+    total_delegations = sum(v[0] for v in provider_map.values())
+    total_failures = sum(v[0] - v[1] for v in provider_map.values())
+
+    df = pd.DataFrame(rows, columns=["#", "Provider", "Delegations", "Ok%", "Failures", "Avg Cost ($)", "Avg Tokens"])
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+            "Provider": st.column_config.TextColumn("Provider"),
+            "Delegations": st.column_config.NumberColumn("Delegations", format="%d"),
+            "Ok%": st.column_config.TextColumn("Ok%", width="small"),
+            "Failures": st.column_config.NumberColumn("Failures", format="%d", width="small"),
+            "Avg Cost ($)": st.column_config.TextColumn("Avg Cost ($)", width="small"),
+            "Avg Tokens": st.column_config.NumberColumn("Avg Tokens", format="%d"),
+        },
+    )
+    st.caption(
+        f"{len(rows)} provider(s)  \u2022  {total_delegations} total delegations  "
+        f"\u2022  {total_failures} total failures"
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
