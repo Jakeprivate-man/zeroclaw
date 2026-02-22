@@ -1027,6 +1027,12 @@ Examples:
         #[arg(long)]
         run: Option<String>,
     },
+    /// Show delegation counts, success rate, token usage, and cost bucketed by provider
+    ProviderTier {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
 Compare per-agent delegation statistics between two runs side-by-side.
@@ -1804,6 +1810,12 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::ModelTier { run }) => {
                     observability::delegation_report::print_model_tier(
+                        &log_path,
+                        run.as_deref(),
+                    )
+                }
+                Some(DelegationCommands::ProviderTier { run }) => {
+                    observability::delegation_report::print_provider_tier(
                         &log_path,
                         run.as_deref(),
                     )
