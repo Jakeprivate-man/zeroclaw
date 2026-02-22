@@ -4443,6 +4443,101 @@ def render_success_breakdown_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_agent_cost_rank_table(run_id: Optional[str] = None) -> None:
+    """Table — agents ranked by average cost per delegation (most expensive first).
+
+    Answers "which agent type is most expensive per individual invocation?" as
+    opposed to token-volume ranking.  Columns: rank, agent, delegations, ok%,
+    avg_cost, avg_tokens, total_cost.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` means all runs.
+    """
+    st.subheader("Agent Cost Rank")
+
+    # agent → [count, success_count, tokens, cost]
+    agent_map: dict = {}
+
+    log_path = _delegation_log_path()
+    if log_path.exists():
+        with log_path.open() as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    ev = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if ev.get("event_type") != "DelegationEnd":
+                    continue
+                if run_id and ev.get("run_id") != run_id:
+                    continue
+                agent = ev.get("agent_name") or "unknown"
+                success = bool(ev.get("success", False))
+                tokens = int(ev.get("tokens_used", 0) or 0)
+                cost = float(ev.get("cost_usd", 0.0) or 0.0)
+                if agent not in agent_map:
+                    agent_map[agent] = [0, 0, 0, 0.0]
+                agent_map[agent][0] += 1
+                if success:
+                    agent_map[agent][1] += 1
+                agent_map[agent][2] += tokens
+                agent_map[agent][3] += cost
+    else:
+        # Mock data: three agents with different avg costs
+        agent_map = {
+            "research": [48, 45, 640_000, 12.8800],
+            "orchestrator": [120, 117, 800_000, 8.0000],
+            "writer": [32, 31, 180_000, 1.4400],
+        }
+
+    if not agent_map:
+        st.info("No delegation events found.")
+        return
+
+    # Sort by avg cost desc
+    rows = []
+    for agent, (count, ok, tokens, cost) in agent_map.items():
+        avg_cost = cost / count if count > 0 else 0.0
+        avg_tokens = tokens / count if count > 0 else 0.0
+        ok_pct = 100.0 * ok / count if count > 0 else 0.0
+        rows.append({
+            "Agent": agent,
+            "Delegations": count,
+            "Ok%": f"{ok_pct:.1f}%",
+            "Avg Cost ($)": f"{avg_cost:.4f}",
+            "Avg Tokens": round(avg_tokens),
+            "Total Cost ($)": f"{cost:.4f}",
+        })
+    rows.sort(key=lambda r: float(r["Avg Cost ($)"]), reverse=True)
+    for i, r in enumerate(rows, 1):
+        r["#"] = i
+
+    total_delegations = sum(v[0] for v in agent_map.values())
+    total_cost = sum(v[3] for v in agent_map.values())
+
+    df = pd.DataFrame(rows, columns=["#", "Agent", "Delegations", "Ok%", "Avg Cost ($)", "Avg Tokens", "Total Cost ($)"])
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+            "Agent": st.column_config.TextColumn("Agent"),
+            "Delegations": st.column_config.NumberColumn("Delegations", format="%d"),
+            "Ok%": st.column_config.TextColumn("Ok%", width="small"),
+            "Avg Cost ($)": st.column_config.TextColumn("Avg Cost ($)", width="small"),
+            "Avg Tokens": st.column_config.NumberColumn("Avg Tokens", format="%d"),
+            "Total Cost ($)": st.column_config.TextColumn("Total Cost ($)", width="small"),
+        },
+    )
+    st.caption(
+        f"{len(rows)} agent(s)  \u2022  {total_delegations} total delegations  "
+        f"\u2022  ${total_cost:.4f} total cost"
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
