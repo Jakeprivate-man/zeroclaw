@@ -799,6 +799,28 @@ Examples:
         #[arg(long)]
         run: Option<String>,
     },
+    /// Per-UTC-hour delegation breakdown, lowest hour first
+    #[command(long_about = "\
+Aggregate all completed delegations by UTC hour-of-day (00–23),
+sorted lowest-hour first so the table reveals peak activity windows.
+Use `--run` to scope to a single run.
+
+The hour key is extracted from the ISO-8601 timestamp (e.g. the event at
+2026-01-15T14:30:00Z contributes to hour \"14:xx\").
+
+Output columns: hour (UTC) | count | ok% | tokens | cost
+
+The footer shows active hours, total delegation count, success count, and
+cumulative cost.
+
+Examples:
+  zeroclaw delegations hourly              # all runs, per-hour breakdown
+  zeroclaw delegations hourly --run <id>   # one run only")]
+    Hourly {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
 Compare per-agent delegation statistics between two runs side-by-side.
@@ -1510,6 +1532,9 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::Daily { run }) => {
                     observability::delegation_report::print_daily(&log_path, run.as_deref())
+                }
+                Some(DelegationCommands::Hourly { run }) => {
+                    observability::delegation_report::print_hourly(&log_path, run.as_deref())
                 }
                 Some(DelegationCommands::Diff { run_a, run_b }) => {
                     observability::delegation_report::print_diff(
