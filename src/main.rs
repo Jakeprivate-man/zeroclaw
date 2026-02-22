@@ -410,7 +410,10 @@ Examples:
   zeroclaw delegations depth         # depth breakdown: delegations per nesting level
   zeroclaw delegations depth --run <id>  # depth breakdown for one run
   zeroclaw delegations errors        # list all failed delegations with error messages
-  zeroclaw delegations errors --run <id>  # failures for one run")]
+  zeroclaw delegations errors --run <id>  # failures for one run
+  zeroclaw delegations slow          # top 10 slowest delegations across all runs
+  zeroclaw delegations slow --limit 5  # top 5 slowest
+  zeroclaw delegations slow --run <id>  # slowest within one run")]
     Delegations {
         #[command(subcommand)]
         delegation_command: Option<DelegationCommands>,
@@ -564,6 +567,28 @@ Examples:
         /// Scope to a specific run ID (default: show all runs)
         #[arg(long)]
         run: Option<String>,
+    },
+    /// List the N slowest delegations ranked by duration descending
+    #[command(long_about = "\
+List the N slowest completed delegations from the log, ranked by duration (longest first).
+
+Only `DelegationEnd` events that carry a `duration_ms` value are included. Use `--run` to
+scope to a single invocation. `--limit` controls how many rows to display (default: 10).
+
+Output columns: # | run (prefix) | agent | depth | duration | tokens | cost
+
+Examples:
+  zeroclaw delegations slow                        # top 10 slowest across all runs
+  zeroclaw delegations slow --limit 5              # top 5 slowest
+  zeroclaw delegations slow --run <id>             # slowest within one run
+  zeroclaw delegations slow --run <id> --limit 3   # top 3 slowest in one run")]
+    Slow {
+        /// Scope to a specific run ID (default: show all runs)
+        #[arg(long)]
+        run: Option<String>,
+        /// Number of rows to display (default: 10)
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
     },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
@@ -1238,6 +1263,9 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::Errors { run }) => {
                     observability::delegation_report::print_errors(&log_path, run.as_deref())
+                }
+                Some(DelegationCommands::Slow { run, limit }) => {
+                    observability::delegation_report::print_slow(&log_path, run.as_deref(), limit)
                 }
                 Some(DelegationCommands::Diff { run_a, run_b }) => {
                     observability::delegation_report::print_diff(
