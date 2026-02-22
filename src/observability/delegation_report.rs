@@ -15,6 +15,7 @@
 //! - [`print_errors`]: list failed delegations with agent, duration, and error message.
 //! - [`print_slow`]: list the N slowest delegations ranked by duration descending.
 //! - [`print_cost`]: per-run cost breakdown table sorted by total cost descending.
+//! - [`print_recent`]: list the N most recently completed delegations, newest first.
 //! - [`get_log_summary`]: programmatic aggregate for `zeroclaw status`.
 //!
 //! All parsing is done via `serde_json::Value` — no new dependencies.
@@ -1550,6 +1551,129 @@ pub fn print_cost(log_path: &Path, run_id: Option<&str>) -> Result<()> {
     println!("{}", "─".repeat(85));
     let total_cost: f64 = rows.iter().map(|r| r.total_cost_usd).sum();
     println!("{} run(s) • total cost: ${total_cost:.4}", rows.len());
+    Ok(())
+}
+
+/// List the N most recently completed delegations, newest first.
+///
+/// Reads `DelegationEnd` events, optionally filtered to a single run, then
+/// sorts by `timestamp` descending and prints the top `limit` rows.
+///
+/// Columns: `#` | `run` (8-char prefix) | `agent` | `depth` |
+///          `duration` | `tokens` | `cost` | `finished (UTC)`
+pub fn print_recent(log_path: &Path, run_id: Option<&str>, limit: usize) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    let events: Vec<&Value> = if let Some(rid) = run_id {
+        all_events
+            .iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events.iter().collect()
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    // Collect all DelegationEnd events.
+    let mut ends: Vec<&Value> = events
+        .iter()
+        .copied()
+        .filter(|e| e.get("event_type").and_then(|x| x.as_str()) == Some("DelegationEnd"))
+        .collect();
+
+    // Sort newest first (ISO-8601 string comparison is correct for UTC).
+    ends.sort_by(|a, b| {
+        let ta = a.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
+        let tb = b.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
+        tb.cmp(ta)
+    });
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    let shown = ends.len().min(limit);
+    println!(
+        "Most Recent Delegations{scope}  [showing {shown} of {}]",
+        ends.len()
+    );
+    println!();
+
+    if ends.is_empty() {
+        println!("No completed delegations found.");
+        return Ok(());
+    }
+
+    println!(
+        "{:>3}  {:<10}  {:<22}  {:>5}  {:>9}  {:>8}  {:>9}  {}",
+        "#", "run", "agent", "depth", "duration", "tokens", "cost", "finished (UTC)"
+    );
+    println!("{}", "─".repeat(100));
+
+    for (i, ev) in ends.iter().take(limit).enumerate() {
+        let run = ev
+            .get("run_id")
+            .and_then(|x| x.as_str())
+            .map(|r| r.chars().take(8).collect::<String>())
+            .unwrap_or_else(|| "?".to_owned());
+        let agent = ev.get("agent_name").and_then(|x| x.as_str()).unwrap_or("?");
+        let depth = ev
+            .get("depth")
+            .and_then(|x| x.as_u64())
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| "?".to_owned());
+        let duration = ev
+            .get("duration_ms")
+            .and_then(|x| x.as_u64())
+            .map(fmt_duration)
+            .unwrap_or_else(|| "—".to_owned());
+        let tokens = ev
+            .get("tokens_used")
+            .and_then(|x| x.as_u64())
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "—".to_owned());
+        let cost = ev
+            .get("cost_usd")
+            .and_then(|x| x.as_f64())
+            .map(|c| format!("${c:.4}"))
+            .unwrap_or_else(|| "—".to_owned());
+        // Format the timestamp into a short UTC display.
+        let finished = ev
+            .get("timestamp")
+            .and_then(|x| x.as_str())
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| {
+                dt.with_timezone(&Utc)
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "?".to_owned());
+        println!(
+            "{:>3}  {:<10}  {:<22}  {:>5}  {:>9}  {:>8}  {:>9}  {}",
+            i + 1,
+            run,
+            agent,
+            depth,
+            duration,
+            tokens,
+            cost,
+            finished,
+        );
+    }
+
+    println!("{}", "─".repeat(100));
+    println!(
+        "Top {shown} most recent of {} completed delegation(s).",
+        ends.len()
+    );
     Ok(())
 }
 
@@ -3924,5 +4048,102 @@ mod tests {
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         assert!(print_cost(&path, None).is_ok());
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ── print_recent tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn print_recent_on_missing_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_recent_missing.jsonl");
+        let _ = std::fs::remove_file(&path);
+        assert!(print_recent(&path, None, 10).is_ok());
+    }
+
+    #[test]
+    fn print_recent_on_empty_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_recent_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        assert!(print_recent(&path, None, 10).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_recent_with_no_ends_reports_empty() {
+        let path = std::env::temp_dir().join("zeroclaw_test_recent_noend.jsonl");
+        let lines =
+            vec![
+                serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z"))
+                    .unwrap(),
+            ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_recent(&path, None, 10);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_recent_sorts_by_timestamp_descending() {
+        let path = std::env::temp_dir().join("zeroclaw_test_recent_sort.jsonl");
+        // Three delegations with timestamps at T+1, T+3, T+2 — should show T+3, T+2, T+1.
+        let ts_pairs = [
+            ("2026-01-01T10:00:01Z", "agent_first"),
+            ("2026-01-01T10:00:03Z", "agent_latest"),
+            ("2026-01-01T10:00:02Z", "agent_middle"),
+        ];
+        let mut lines = Vec::new();
+        for (ts, agent) in &ts_pairs {
+            lines.push(
+                serde_json::to_string(&make_start("run-a", agent, 0, "2026-01-01T10:00:00Z"))
+                    .unwrap(),
+            );
+            lines.push(
+                serde_json::to_string(&make_end("run-a", agent, 0, ts, 100, 0.001, true)).unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert!(print_recent(&path, None, 10).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_recent_respects_limit() {
+        let path = std::env::temp_dir().join("zeroclaw_test_recent_limit.jsonl");
+        let mut lines = Vec::new();
+        for i in 0..5usize {
+            let agent = format!("agent_{i}");
+            let ts = format!("2026-01-01T10:00:{:02}Z", i);
+            lines.push(
+                serde_json::to_string(&make_start("run-a", &agent, 0, "2026-01-01T10:00:00Z"))
+                    .unwrap(),
+            );
+            lines.push(
+                serde_json::to_string(&make_end("run-a", &agent, 0, &ts, 100, 0.001, true))
+                    .unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert!(print_recent(&path, None, 2).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_recent_filters_by_run() {
+        let path = std::env::temp_dir().join("zeroclaw_test_recent_filter.jsonl");
+        let mut lines = Vec::new();
+        for (run, ts) in &[
+            ("run-keep", "2026-01-01T10:00:01Z"),
+            ("run-skip", "2026-01-02T10:00:01Z"),
+        ] {
+            lines.push(
+                serde_json::to_string(&make_start(run, "main", 0, "2026-01-01T09:00:00Z")).unwrap(),
+            );
+            lines.push(
+                serde_json::to_string(&make_end(run, "main", 0, ts, 100, 0.001, true)).unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_recent(&path, Some("run-keep"), 10);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
     }
 }
