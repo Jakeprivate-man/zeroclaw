@@ -406,7 +406,9 @@ Examples:
   zeroclaw delegations models        # model breakdown: tokens and cost per model
   zeroclaw delegations models --run <id>  # model breakdown for one run
   zeroclaw delegations providers     # provider breakdown: tokens and cost per provider
-  zeroclaw delegations providers --run <id>  # provider breakdown for one run")]
+  zeroclaw delegations providers --run <id>  # provider breakdown for one run
+  zeroclaw delegations depth         # depth breakdown: delegations per nesting level
+  zeroclaw delegations depth --run <id>  # depth breakdown for one run")]
     Delegations {
         #[command(subcommand)]
         delegation_command: Option<DelegationCommands>,
@@ -523,6 +525,23 @@ Examples:
   zeroclaw delegations providers              # all runs, sorted by tokens
   zeroclaw delegations providers --run <id>  # scope to one run")]
     Providers {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
+    /// Show per-depth-level delegation breakdown (all runs or one run)
+    #[command(long_about = "\
+Aggregate delegation events by depth level and print a breakdown table.
+
+Depth 0 is the root (top-level) agent; each additional level represents
+a nested sub-agent delegation. Rows are sorted by depth ascending.
+
+Output columns: depth | delegations | ended | success% | tokens | cost
+
+Examples:
+  zeroclaw delegations depth              # all runs, depth 0 first
+  zeroclaw delegations depth --run <id>  # scope to one run")]
+    Depth {
         /// Scope to a specific run ID (default: aggregate across all runs)
         #[arg(long)]
         run: Option<String>,
@@ -1194,6 +1213,9 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::Providers { run }) => {
                     observability::delegation_report::print_providers(&log_path, run.as_deref())
+                }
+                Some(DelegationCommands::Depth { run }) => {
+                    observability::delegation_report::print_depth(&log_path, run.as_deref())
                 }
                 Some(DelegationCommands::Diff { run_a, run_b }) => {
                     observability::delegation_report::print_diff(

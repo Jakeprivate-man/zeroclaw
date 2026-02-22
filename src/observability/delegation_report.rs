@@ -11,6 +11,7 @@
 //! - [`print_prune`]: remove old runs from the log, keeping the N most recent.
 //! - [`print_models`]: per-model breakdown table across all (or one) run.
 //! - [`print_providers`]: per-provider breakdown table across all (or one) run.
+//! - [`print_depth`]: per-depth-level breakdown table across all (or one) run.
 //! - [`get_log_summary`]: programmatic aggregate for `zeroclaw status`.
 //!
 //! All parsing is done via `serde_json::Value` — no new dependencies.
@@ -61,6 +62,15 @@ struct ProviderRow {
     provider: String,
     run_count: usize,
     delegation_count: usize,
+    total_tokens: u64,
+    total_cost_usd: f64,
+}
+
+struct DepthRow {
+    depth: u32,
+    delegation_count: usize,
+    end_count: usize,
+    success_count: usize,
     total_tokens: u64,
     total_cost_usd: f64,
 }
@@ -1041,6 +1051,130 @@ pub fn print_providers(log_path: &Path, run_id: Option<&str>) -> Result<()> {
         "TOTAL",
         "",
         sorted.iter().map(|r| r.delegation_count).sum::<usize>(),
+        if total_tok > 0 {
+            total_tok.to_string()
+        } else {
+            "—".to_owned()
+        },
+        if total_cost > 0.0 {
+            format!("${total_cost:.4}")
+        } else {
+            "—".to_owned()
+        },
+    );
+    println!();
+    println!("Use `--run <id>` to scope to a single run.");
+    Ok(())
+}
+
+/// Aggregate delegation events by `depth` level and print a breakdown table.
+///
+/// Rows are sorted by depth ascending (root level first). When `run_id` is
+/// `Some`, only events from that run are included.
+pub fn print_depth(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    let events: Vec<&Value> = if let Some(rid) = run_id {
+        all_events
+            .iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events.iter().collect()
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    // Aggregate per depth level.
+    let mut rows: HashMap<u32, DepthRow> = HashMap::new();
+
+    for ev in &events {
+        let Some(depth) = ev.get("depth").and_then(|x| x.as_u64()).map(|d| d as u32) else {
+            continue;
+        };
+        let entry = rows.entry(depth).or_insert_with(|| DepthRow {
+            depth,
+            delegation_count: 0,
+            end_count: 0,
+            success_count: 0,
+            total_tokens: 0,
+            total_cost_usd: 0.0,
+        });
+        match ev.get("event_type").and_then(|x| x.as_str()) {
+            Some("DelegationStart") => entry.delegation_count += 1,
+            Some("DelegationEnd") => {
+                entry.end_count += 1;
+                if ev.get("success").and_then(|x| x.as_bool()).unwrap_or(false) {
+                    entry.success_count += 1;
+                }
+                if let Some(tok) = ev.get("tokens_used").and_then(|x| x.as_u64()) {
+                    entry.total_tokens += tok;
+                }
+                if let Some(cost) = ev.get("cost_usd").and_then(|x| x.as_f64()) {
+                    entry.total_cost_usd += cost;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Sort by depth ascending.
+    let mut sorted: Vec<DepthRow> = rows.into_values().collect();
+    sorted.sort_by_key(|r| r.depth);
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!("Depth Breakdown{scope}");
+    println!();
+    println!(
+        "{:>5}  {:>11}  {:>6}  {:>9}  {:>10}  {:>10}",
+        "depth", "delegations", "ended", "success%", "tokens", "cost"
+    );
+    println!("{}", "─".repeat(60));
+
+    for row in &sorted {
+        let success_pct = if row.end_count > 0 {
+            format!(
+                "{:.1}%",
+                100.0 * row.success_count as f64 / row.end_count as f64
+            )
+        } else {
+            "—".to_owned()
+        };
+        let tok = if row.total_tokens > 0 {
+            row.total_tokens.to_string()
+        } else {
+            "—".to_owned()
+        };
+        let cost = if row.total_cost_usd > 0.0 {
+            format!("${:.4}", row.total_cost_usd)
+        } else {
+            "—".to_owned()
+        };
+        println!(
+            "{:>5}  {:>11}  {:>6}  {:>9}  {:>10}  {:>10}",
+            row.depth, row.delegation_count, row.end_count, success_pct, tok, cost,
+        );
+    }
+
+    println!("{}", "─".repeat(60));
+    let total_tok: u64 = sorted.iter().map(|r| r.total_tokens).sum();
+    let total_cost: f64 = sorted.iter().map(|r| r.total_cost_usd).sum();
+    println!(
+        "{:>5}  {:>11}  {:>6}  {:>9}  {:>10}  {:>10}",
+        "TOTAL",
+        sorted.iter().map(|r| r.delegation_count).sum::<usize>(),
+        sorted.iter().map(|r| r.end_count).sum::<usize>(),
+        "",
         if total_tok > 0 {
             total_tok.to_string()
         } else {
@@ -2788,6 +2922,187 @@ mod tests {
         }
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         assert!(print_providers(&path, None).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_depth_on_missing_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_depth_missing.jsonl");
+        let _ = std::fs::remove_file(&path);
+        assert!(print_depth(&path, None).is_ok());
+    }
+
+    #[test]
+    fn print_depth_on_empty_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_depth_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        assert!(print_depth(&path, None).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_depth_aggregates_by_depth_level() {
+        let path = std::env::temp_dir().join("zeroclaw_test_depth_agg.jsonl");
+        let mut lines = Vec::new();
+        // depth 0: main agent
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "main",
+                0,
+                "2026-01-01T10:00:10Z",
+                1000,
+                0.003,
+                true,
+            ))
+            .unwrap(),
+        );
+        // depth 1: sub-agent
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "sub", 1, "2026-01-01T10:00:01Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "sub",
+                1,
+                "2026-01-01T10:00:09Z",
+                500,
+                0.001,
+                true,
+            ))
+            .unwrap(),
+        );
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_depth(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_depth_sorts_ascending() {
+        let path = std::env::temp_dir().join("zeroclaw_test_depth_sort.jsonl");
+        let mut lines = Vec::new();
+        // Insert depth 2 before depth 0 to verify ascending sort.
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "leaf", 2, "2026-01-01T10:00:02Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "leaf",
+                2,
+                "2026-01-01T10:00:08Z",
+                200,
+                0.0005,
+                true,
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "main",
+                0,
+                "2026-01-01T10:00:10Z",
+                800,
+                0.002,
+                true,
+            ))
+            .unwrap(),
+        );
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert!(print_depth(&path, None).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_depth_with_run_filter_excludes_other_runs() {
+        let path = std::env::temp_dir().join("zeroclaw_test_depth_filter.jsonl");
+        let mut lines = Vec::new();
+        lines.push(
+            serde_json::to_string(&make_start("run-keep", "main", 0, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-keep",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                600,
+                0.002,
+                true,
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-skip", "other", 0, "2026-01-02T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-skip",
+                "other",
+                0,
+                "2026-01-02T10:00:05Z",
+                9999,
+                0.030,
+                false,
+            ))
+            .unwrap(),
+        );
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_depth(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_depth_tracks_success_and_failure() {
+        let path = std::env::temp_dir().join("zeroclaw_test_depth_success.jsonl");
+        let mut lines = Vec::new();
+        // Two depth-1 agents: one succeeds, one fails.
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "ok-sub", 1, "2026-01-01T10:00:01Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "ok-sub",
+                1,
+                "2026-01-01T10:00:05Z",
+                300,
+                0.001,
+                true,
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "fail-sub", 1, "2026-01-01T10:00:02Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "fail-sub",
+                1,
+                "2026-01-01T10:00:06Z",
+                100,
+                0.0003,
+                false,
+            ))
+            .unwrap(),
+        );
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert!(print_depth(&path, None).is_ok());
         let _ = std::fs::remove_file(&path);
     }
 }
