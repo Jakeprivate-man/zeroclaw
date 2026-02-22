@@ -4664,6 +4664,77 @@ pub fn print_token_efficiency(log_path: &Path, run_id: Option<&str>) -> Result<(
     Ok(())
 }
 
+/// Show delegation counts, token usage, and cost split by outcome: succeeded
+/// vs. failed.  Answers "how much token/cost spending landed on failed calls?".
+///
+/// When `run_id` is `Some`, only events from that run are included.
+/// Produces no output (and returns `Ok`) when the log is absent or empty.
+pub fn print_success_breakdown(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    const LABELS: [&str; 2] = ["succeeded", "failed"];
+    // [count, tokens, cost]  (no success_count sub-field — outcome IS the category)
+    let mut buckets: [(usize, u64, f64); 2] = [(0, 0, 0.0); 2];
+
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        return Ok(());
+    }
+
+    for ev in &all_events {
+        if ev.get("event_type").and_then(|v| v.as_str()).unwrap_or("") != "DelegationEnd" {
+            continue;
+        }
+        if let Some(rid) = run_id {
+            if ev.get("run_id").and_then(|v| v.as_str()).unwrap_or("") != rid {
+                continue;
+            }
+        }
+        let success = ev.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+        let tokens = ev.get("tokens_used").and_then(|v| v.as_u64()).unwrap_or(0);
+        let cost = ev.get("cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let idx = if success { 0 } else { 1 };
+        let (c, t, co) = buckets[idx];
+        buckets[idx] = (c + 1, t + tokens, co + cost);
+    }
+
+    if buckets.iter().all(|(c, ..)| *c == 0) {
+        return Ok(());
+    }
+
+    let total_count: usize = buckets.iter().map(|(c, ..)| c).sum();
+    let sep = "\u{2500}".repeat(53);
+    println!("{:<10}  {:>7}  {:>8}  {:>10}  {:>10}", "outcome", "count", "share%", "tokens", "cost ($)");
+    println!("{sep}");
+
+    let mut total_tokens = 0u64;
+    let mut total_cost = 0.0f64;
+    let mut populated = 0usize;
+
+    for (i, &(count, tokens, cost)) in buckets.iter().enumerate() {
+        if count == 0 {
+            continue;
+        }
+        populated += 1;
+        let share = 100.0 * count as f64 / total_count as f64;
+        println!(
+            "{:<10}  {:>7}  {:>7.1}%  {:>10}  {:>10.4}",
+            LABELS[i], count, share, tokens, cost,
+        );
+        total_tokens += tokens;
+        total_cost += cost;
+    }
+
+    println!("{sep}");
+    let succeeded = buckets[0].0;
+    println!(
+        "{} outcome(s) present  \u{2022}  {} total delegations  \u{2022}  {} succeeded  \u{2022}  ${:.4} total cost",
+        populated,
+        total_count,
+        succeeded,
+        total_cost,
+    );
+    Ok(())
+}
+
 /// `ExportFormat::Csv`: emits a header row followed by one row per
 /// `DelegationEnd` event with columns:
 /// `run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp`
@@ -9807,6 +9878,113 @@ mod tests {
         ];
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_token_efficiency(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    // ── Phase 89: print_success_breakdown ────────────────────────────────────
+
+    fn make_sb_event(
+        run_id: &str,
+        tokens: u64,
+        cost: f64,
+        success: bool,
+        ts: &str,
+    ) -> String {
+        serde_json::to_string(&serde_json::json!({
+            "event_type": "DelegationEnd",
+            "run_id": run_id,
+            "agent_name": "researcher",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "depth": 0u32,
+            "duration_ms": 1000u64,
+            "tokens_used": tokens,
+            "cost_usd": cost,
+            "success": success,
+            "timestamp": ts,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn print_success_breakdown_both_outcomes() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_sb_both.jsonl");
+        let lines = vec![
+            make_sb_event("run1", 1000, 0.010, true,  "2026-02-01T10:00:00Z"),
+            make_sb_event("run1", 2000, 0.020, true,  "2026-02-01T11:00:00Z"),
+            make_sb_event("run1", 500,  0.005, false, "2026-02-01T12:00:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_success_breakdown(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_success_breakdown_empty_log() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_sb_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_success_breakdown(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_success_breakdown_missing_log() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_sb_missing_XXXX.jsonl");
+        let _ = std::fs::remove_file(&path);
+        let result = print_success_breakdown(&path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_success_breakdown_all_success() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_sb_allsuccess.jsonl");
+        let lines = vec![
+            make_sb_event("run1", 1000, 0.010, true, "2026-02-01T10:00:00Z"),
+            make_sb_event("run1", 1500, 0.015, true, "2026-02-01T11:00:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_success_breakdown(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_success_breakdown_only_delegation_end() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_sb_evtype.jsonl");
+        let start_ev = serde_json::to_string(&serde_json::json!({
+            "event_type": "DelegationStart",
+            "run_id": "run1",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "depth": 0u32,
+            "timestamp": "2026-02-01T10:00:00Z",
+        }))
+        .unwrap();
+        let end_ev = make_sb_event("run1", 800, 0.008, true, "2026-02-01T10:01:00Z");
+        std::fs::write(&path, format!("{start_ev}\n{end_ev}\n")).unwrap();
+        let result = print_success_breakdown(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_success_breakdown_filters_by_run() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_sb_runfilter.jsonl");
+        let lines = vec![
+            make_sb_event("run-keep", 1000, 0.010, true,  "2026-02-01T10:00:00Z"),
+            make_sb_event("run-skip", 2000, 0.020, false, "2026-02-01T11:00:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_success_breakdown(&path, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }
