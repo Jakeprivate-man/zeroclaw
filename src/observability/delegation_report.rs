@@ -4735,6 +4735,111 @@ pub fn print_success_breakdown(log_path: &Path, run_id: Option<&str>) -> Result<
     Ok(())
 }
 
+/// Ranks agents by average cost per delegation (most expensive per call first).
+///
+/// Answers "which individual agent type is most expensive per invocation?" as opposed
+/// to `print_top` (total-volume ranking) and `print_stats` (count-sorted, avg duration focus).
+///
+/// Columns: # | agent | delegations | ok% | avg_cost | avg_tokens | total_cost
+///
+/// When `run_id` is `Some`, only events from that run are included.
+/// Produces no output (and returns `Ok`) when the log is absent or empty.
+pub fn print_agent_cost_rank(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        return Ok(());
+    }
+
+    let events: Vec<Value> = if let Some(rid) = run_id {
+        all_events
+            .into_iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events
+    };
+
+    // agent → (count, success_count, tokens, total_cost)
+    let mut map: std::collections::HashMap<String, (usize, usize, u64, f64)> =
+        std::collections::HashMap::new();
+
+    for ev in &events {
+        if ev.get("event_type").and_then(|x| x.as_str()) != Some("DelegationEnd") {
+            continue;
+        }
+        let agent = ev
+            .get("agent_name")
+            .and_then(|x| x.as_str())
+            .unwrap_or("unknown")
+            .to_owned();
+        let success = ev.get("success").and_then(|x| x.as_bool()).unwrap_or(false);
+        let tokens = ev.get("tokens_used").and_then(|x| x.as_u64()).unwrap_or(0);
+        let cost = ev.get("cost_usd").and_then(|x| x.as_f64()).unwrap_or(0.0);
+        let e = map.entry(agent).or_insert((0, 0, 0, 0.0));
+        e.0 += 1;
+        if success {
+            e.1 += 1;
+        }
+        e.2 += tokens;
+        e.3 += cost;
+    }
+
+    if map.is_empty() {
+        return Ok(());
+    }
+
+    // Sort by avg_cost per delegation descending, break ties by name ascending.
+    let mut rows: Vec<(String, usize, usize, u64, f64)> = map
+        .into_iter()
+        .map(|(agent, (count, ok, tokens, cost))| (agent, count, ok, tokens, cost))
+        .collect();
+    rows.sort_by(|a, b| {
+        let avg_a = a.4 / a.1 as f64;
+        let avg_b = b.4 / b.1 as f64;
+        avg_b.partial_cmp(&avg_a).unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!("Agent cost rank — avg cost per delegation{scope}");
+    println!();
+    println!(
+        "{:>3}  {:<26}  {:>7}  {:>8}  {:>10}  {:>10}  {:>10}",
+        "#", "agent", "count", "ok%", "avg_cost", "avg_tok", "total_cost"
+    );
+    println!("{}", "─".repeat(84));
+
+    for (rank, (agent, count, ok, tokens, cost)) in rows.iter().enumerate() {
+        let ok_pct = 100.0 * (*ok as f64) / (*count as f64);
+        let avg_cost = cost / (*count as f64);
+        let avg_tok = *tokens as f64 / (*count as f64);
+        println!(
+            "{:>3}  {:<26}  {:>7}  {:>7.1}%  {:>10.4}  {:>10.0}  {:>10.4}",
+            rank + 1,
+            agent,
+            count,
+            ok_pct,
+            avg_cost,
+            avg_tok,
+            cost
+        );
+    }
+
+    println!("{}", "─".repeat(84));
+    let total_delegations: usize = rows.iter().map(|(_, c, _, _, _)| c).sum();
+    let total_cost: f64 = rows.iter().map(|(_, _, _, _, c)| c).sum();
+    println!(
+        "{} agent(s) \u{2022} {} total delegations \u{2022} ${:.4} total cost",
+        rows.len(),
+        total_delegations,
+        total_cost
+    );
+
+    Ok(())
+}
+
 /// `ExportFormat::Csv`: emits a header row followed by one row per
 /// `DelegationEnd` event with columns:
 /// `run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp`
@@ -9985,6 +10090,92 @@ mod tests {
         ];
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_success_breakdown(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    // ── print_agent_cost_rank ──────────────────────────────────────────────
+
+    fn make_acr_event(run_id: &str, agent: &str, tokens: u64, cost: f64, success: bool, ts: &str) -> String {
+        format!(
+            r#"{{"event_type":"DelegationEnd","run_id":"{run_id}","agent_name":"{agent}","tokens_used":{tokens},"cost_usd":{cost},"success":{success},"timestamp":"{ts}"}}"#
+        )
+    }
+
+    #[test]
+    fn print_agent_cost_rank_multiple_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.jsonl");
+        // expensive_agent: 1 delegation at $0.50 → avg $0.50
+        // cheap_agent: 2 delegations at $0.02 each → avg $0.02
+        let lines = vec![
+            make_acr_event("r1", "expensive_agent", 5000, 0.50, true,  "2026-02-01T10:00:00Z"),
+            make_acr_event("r1", "cheap_agent",     500,  0.02, true,  "2026-02-01T10:01:00Z"),
+            make_acr_event("r1", "cheap_agent",     600,  0.02, false, "2026-02-01T10:02:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_agent_cost_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_agent_cost_rank_empty_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_agent_cost_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_agent_cost_rank_missing_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.jsonl");
+        let result = print_agent_cost_rank(&path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_agent_cost_rank_skips_start_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.jsonl");
+        let start = r#"{"event_type":"DelegationStart","run_id":"r1","agent_name":"agt","timestamp":"2026-02-01T10:00:00Z"}"#;
+        let end = make_acr_event("r1", "agt", 1000, 0.05, true, "2026-02-01T10:01:00Z");
+        std::fs::write(&path, format!("{start}\n{end}\n")).unwrap();
+        let result = print_agent_cost_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_agent_cost_rank_sorted_by_avg_cost_desc() {
+        // Three agents: medium ($0.10 avg), high ($0.30 avg), low ($0.01 avg)
+        // Expected output order: high, medium, low
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.jsonl");
+        let lines = vec![
+            make_acr_event("r1", "medium_agt", 2000, 0.10, true, "2026-02-01T10:00:00Z"),
+            make_acr_event("r1", "high_agt",   8000, 0.30, true, "2026-02-01T10:01:00Z"),
+            make_acr_event("r1", "low_agt",     100, 0.01, true, "2026-02-01T10:02:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_agent_cost_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_agent_cost_rank_filters_by_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.jsonl");
+        let lines = vec![
+            make_acr_event("run-keep", "agt_a", 1000, 0.05, true,  "2026-02-01T10:00:00Z"),
+            make_acr_event("run-skip", "agt_b", 2000, 0.10, false, "2026-02-01T10:01:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_agent_cost_rank(&path, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }
