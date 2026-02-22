@@ -984,6 +984,28 @@ Examples:
         #[arg(long)]
         run: Option<String>,
     },
+    /// Delegation count, ok%, tokens, and cost grouped by nesting depth bucket
+    #[command(long_about = "\
+Aggregate all completed delegations into five depth buckets and show
+statistics per bucket, ordered shallowest-first.  Empty buckets are omitted.
+
+Bucket boundaries:
+  root      depth 0   (top-level, orchestrated by the main agent)
+  sub       depth 1   (first-level sub-agents)
+  deep      depth 2
+  deeper    depth 3
+  very deep depth 4+
+
+Output columns: depth | count | ok% | tokens | cost
+
+Examples:
+  zeroclaw delegations depth-bucket              # all runs
+  zeroclaw delegations depth-bucket --run <id>   # one run only")]
+    DepthBucket {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
 Compare per-agent delegation statistics between two runs side-by-side.
@@ -1749,6 +1771,12 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::Weekly { run }) => {
                     observability::delegation_report::print_weekly(
+                        &log_path,
+                        run.as_deref(),
+                    )
+                }
+                Some(DelegationCommands::DepthBucket { run }) => {
+                    observability::delegation_report::print_depth_bucket(
                         &log_path,
                         run.as_deref(),
                     )

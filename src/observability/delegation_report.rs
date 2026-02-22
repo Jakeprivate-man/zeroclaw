@@ -4024,6 +4024,134 @@ pub fn print_weekly(log_path: &Path, run_id: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Aggregate completed delegations into five depth buckets and print a
+/// breakdown table, ordered shallowest-first.
+///
+/// Bucket boundaries:
+///   root      depth 0
+///   sub       depth 1
+///   deep      depth 2
+///   deeper    depth 3
+///   very deep depth 4+
+///
+/// Only `DelegationEnd` events are counted.  Empty buckets are omitted.
+/// Use `run_id` to scope to a single process invocation; `None` aggregates
+/// across every stored run.
+///
+/// Output columns: depth | count | ok% | tokens | cost
+pub fn print_depth_bucket(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    const LABELS: [&str; 5] = ["root (0)", "sub (1)", "deep (2)", "deeper (3)", "very deep (4+)"];
+
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    let events: Vec<&Value> = if let Some(rid) = run_id {
+        all_events
+            .iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events.iter().collect()
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    // buckets[i] = (count, success_count, tokens, cost)
+    let mut buckets: [(usize, usize, u64, f64); 5] = [(0, 0, 0, 0.0); 5];
+
+    for ev in &events {
+        if ev.get("event_type").and_then(|x| x.as_str()) != Some("DelegationEnd") {
+            continue;
+        }
+        let depth = ev
+            .get("depth")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0) as usize;
+        let idx = match depth {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            3 => 3,
+            _ => 4,
+        };
+        let ok = ev.get("success").and_then(|x| x.as_bool()).unwrap_or(false);
+        let tokens = ev
+            .get("tokens_used")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        let cost = ev
+            .get("cost_usd")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0);
+        buckets[idx].0 += 1;
+        if ok {
+            buckets[idx].1 += 1;
+        }
+        buckets[idx].2 += tokens;
+        buckets[idx].3 += cost;
+    }
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!("Depth Bucket Breakdown{scope}");
+    println!();
+    println!(
+        "{:<15}  {:>7}  {:>8}  {:>10}  {:>10}",
+        "depth", "count", "ok%", "tokens", "cost"
+    );
+    println!("{}", "\u{2500}".repeat(58));
+
+    let mut total_count: usize = 0;
+    let mut total_success: usize = 0;
+    let mut total_tokens: u64 = 0;
+    let mut total_cost: f64 = 0.0;
+    let mut populated: usize = 0;
+
+    for (i, (count, success_count, tokens, cost)) in buckets.iter().enumerate() {
+        if *count == 0 {
+            continue;
+        }
+        populated += 1;
+        let ok_pct = format!("{:.1}%", 100.0 * (*success_count as f64) / (*count as f64));
+        let tok_str = if *tokens > 0 {
+            tokens.to_string()
+        } else {
+            "\u{2014}".to_owned()
+        };
+        let cost_str = if *cost > 0.0 {
+            format!("${cost:.4}")
+        } else {
+            "\u{2014}".to_owned()
+        };
+        println!(
+            "{:<15}  {:>7}  {:>8}  {:>10}  {:>10}",
+            LABELS[i], count, ok_pct, tok_str, cost_str,
+        );
+        total_count += count;
+        total_success += success_count;
+        total_tokens += tokens;
+        total_cost += cost;
+    }
+
+    println!("{}", "\u{2500}".repeat(58));
+    println!(
+        "{} bucket(s) populated  \u{2022}  {} total delegations  \u{2022}  {} succeeded  \u{2022}  ${:.4} total cost",
+        populated,
+        total_count,
+        total_success,
+        total_cost,
+    );
+    Ok(())
+}
+
 /// `ExportFormat::Csv`: emits a header row followed by one row per
 /// `DelegationEnd` event with columns:
 /// `run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp`
@@ -8440,6 +8568,119 @@ mod tests {
         }
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_weekly(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    // ── print_depth_bucket tests ─────────────────────────────────────────────
+
+    #[test]
+    fn print_depth_bucket_missing_log() {
+        let path =
+            std::path::PathBuf::from("/tmp/zeroclaw_no_such_file_depth_bucket.jsonl");
+        let result = print_depth_bucket(&path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_depth_bucket_empty_log() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_depth_bucket_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_depth_bucket(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_depth_bucket_no_ends() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_depth_bucket_noends.jsonl");
+        let ev = serde_json::json!({
+            "event_type": "DelegationStart",
+            "run_id": "run-1",
+            "agent_name": "researcher",
+            "depth": 0u32,
+            "timestamp": "2026-02-01T10:00:00Z",
+        });
+        std::fs::write(&path, serde_json::to_string(&ev).unwrap() + "\n").unwrap();
+        let result = print_depth_bucket(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_depth_bucket_groups_by_depth() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_depth_bucket_groups.jsonl");
+        let mut lines = Vec::new();
+        for depth in &[0u32, 1, 2, 3, 5] {
+            let ev = serde_json::json!({
+                "event_type": "DelegationEnd",
+                "run_id": "run-1",
+                "agent_name": "researcher",
+                "depth": depth,
+                "duration_ms": 1000u64,
+                "tokens_used": 400u64,
+                "cost_usd": 0.004f64,
+                "success": true,
+                "timestamp": "2026-02-01T10:00:00Z",
+            });
+            lines.push(serde_json::to_string(&ev).unwrap());
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_depth_bucket(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_depth_bucket_deep_goes_to_last_bucket() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_depth_bucket_deep.jsonl");
+        let mut lines = Vec::new();
+        // depths 4, 7, 10 should all map to bucket index 4 (very deep)
+        for depth in &[4u32, 7, 10] {
+            let ev = serde_json::json!({
+                "event_type": "DelegationEnd",
+                "run_id": "run-1",
+                "agent_name": "researcher",
+                "depth": depth,
+                "duration_ms": 500u64,
+                "tokens_used": 200u64,
+                "cost_usd": 0.002f64,
+                "success": true,
+                "timestamp": "2026-02-01T10:00:00Z",
+            });
+            lines.push(serde_json::to_string(&ev).unwrap());
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_depth_bucket(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_depth_bucket_filters_by_run() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_depth_bucket_runfilter.jsonl");
+        let mut lines = Vec::new();
+        for (run, depth) in &[("run-keep", 0u32), ("run-skip", 2u32)] {
+            let ev = serde_json::json!({
+                "event_type": "DelegationEnd",
+                "run_id": run,
+                "agent_name": "researcher",
+                "depth": depth,
+                "duration_ms": 1000u64,
+                "tokens_used": 500u64,
+                "cost_usd": 0.005f64,
+                "success": true,
+                "timestamp": "2026-02-01T10:00:00Z",
+            });
+            lines.push(serde_json::to_string(&ev).unwrap());
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_depth_bucket(&path, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }
