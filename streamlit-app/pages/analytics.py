@@ -351,6 +351,9 @@ def render() -> None:
         # Model token rank table (scoped to selected run when set)
         delegation_charts.render_model_token_rank_table(run_id=selected_run_id)
 
+        # Provider token rank table (scoped to selected run when set)
+        delegation_charts.render_provider_token_rank_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
