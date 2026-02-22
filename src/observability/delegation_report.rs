@@ -6315,6 +6315,118 @@ pub fn print_run_duration_rank(log_path: &Path, run_id: Option<&str>) -> Result<
     Ok(())
 }
 
+/// Ranks runs by success rate (most reliable first).
+///
+/// Answers "which run was most reliable?" — the run-level view of the
+/// success-rank series alongside agent-, model-, and provider-success-rank.
+///
+/// Output columns: `# | run | delegations | ok% | failures | avg_cost | avg_tok`
+///
+/// Sorted by ok_pct descending, ties by delegation count descending (more samples first),
+/// then by run_id ascending.
+/// When `run_id` is `Some`, only events from that run are included (single-row result).
+pub fn print_run_success_rank(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    // run_id → (count, success_count, tokens, total_cost)
+    let mut run_map: HashMap<String, (usize, usize, u64, f64)> = HashMap::new();
+
+    for ev in &all_events {
+        if ev.get("event_type").and_then(|x| x.as_str()) != Some("DelegationEnd") {
+            continue;
+        }
+        let Some(rid) = ev.get("run_id").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        if let Some(filter) = run_id {
+            if rid != filter {
+                continue;
+            }
+        }
+        let success = ev
+            .get("success")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+        let tokens = ev
+            .get("tokens_used")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        let cost = ev
+            .get("cost_usd")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0);
+        let entry = run_map.entry(rid.to_owned()).or_insert((0, 0, 0, 0.0));
+        entry.0 += 1;
+        if success {
+            entry.1 += 1;
+        }
+        entry.2 += tokens;
+        entry.3 += cost;
+    }
+
+    if run_map.is_empty() {
+        println!("No delegation events found.");
+        return Ok(());
+    }
+
+    let mut rows: Vec<(String, usize, usize, u64, f64)> = run_map
+        .into_iter()
+        .map(|(rid, (c, ok, tok, cost))| (rid, c, ok, tok, cost))
+        .collect();
+    // Sort: ok_pct desc, ties by count desc, then run_id asc
+    rows.sort_by(|a, b| {
+        let ok_a = if a.1 > 0 { a.2 as f64 / a.1 as f64 } else { 0.0 };
+        let ok_b = if b.1 > 0 { b.2 as f64 / b.1 as f64 } else { 0.0 };
+        ok_b.partial_cmp(&ok_a)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.1.cmp(&a.1))
+            .then(a.0.cmp(&b.0))
+    });
+
+    let total_delegations: usize = rows.iter().map(|(_, c, _, _, _)| c).sum();
+    let total_failures: usize = rows.iter().map(|(_, c, ok, _, _)| c - ok).sum();
+
+    println!(
+        " {:<3} {:<32} {:>11} {:>6} {:>9} {:>10} {:>9}",
+        "#", "run", "delegations", "ok%", "failures", "avg_cost", "avg_tok"
+    );
+    println!("{}", "─".repeat(90));
+    for (i, (rid, count, ok, tokens, cost)) in rows.iter().enumerate() {
+        let failures = count - ok;
+        let avg_cost = if *count > 0 { cost / *count as f64 } else { 0.0 };
+        let avg_tok = if *count > 0 { tokens / *count as u64 } else { 0 };
+        let ok_pct = if *count > 0 {
+            100.0 * *ok as f64 / *count as f64
+        } else {
+            0.0
+        };
+        println!(
+            " {:<3} {:<32} {:>11} {:>5.1}% {:>9} {:>10.4} {:>9}",
+            i + 1,
+            rid,
+            count,
+            ok_pct,
+            failures,
+            avg_cost,
+            avg_tok,
+        );
+    }
+    println!("{}", "─".repeat(90));
+    println!(
+        "{} run(s) \u{2022} {} total delegations \u{2022} {} total failures",
+        rows.len(),
+        total_delegations,
+        total_failures,
+    );
+
+    Ok(())
+}
+
 /// `ExportFormat::Csv`: emits a header row followed by one row per
 /// `DelegationEnd` event with columns:
 /// `run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp`
@@ -12804,6 +12916,88 @@ mod tests {
         ];
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_run_duration_rank(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    // ── print_run_success_rank ─────────────────────────────────────────────
+
+    fn make_rsr_event(run_id: &str, agent: &str, tokens: u64, cost: f64, success: bool, ts: &str) -> String {
+        format!(
+            r#"{{"event_type":"DelegationEnd","run_id":"{run_id}","agent_name":"{agent}","tokens_used":{tokens},"cost_usd":{cost},"success":{success},"timestamp":"{ts}"}}"#
+        )
+    }
+
+    #[test]
+    fn print_run_success_rank_multiple_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        let lines = vec![
+            make_rsr_event("run-alpha", "agent-a", 5_000, 0.50, true,  "2026-02-01T10:00:00Z"),
+            make_rsr_event("run-beta",  "agent-b", 3_000, 0.30, true,  "2026-02-01T10:01:00Z"),
+            make_rsr_event("run-gamma", "agent-c", 1_000, 0.10, false, "2026-02-01T10:02:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_run_success_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_run_success_rank_empty_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_run_success_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_run_success_rank_missing_log() {
+        let path = std::path::PathBuf::from("/tmp/zeroclaw_rsr_missing_test.jsonl");
+        let result = print_run_success_rank(&path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_run_success_rank_skips_start_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        let start = r#"{"event_type":"DelegationStart","run_id":"run-only","agent_name":"agent-a","timestamp":"2026-02-01T10:00:00Z"}"#;
+        std::fs::write(&path, start.to_owned() + "\n").unwrap();
+        let result = print_run_success_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_run_success_rank_sorted_by_ok_pct_desc() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        // run-reliable: 2/2 = 100%; run-flaky: 1/2 = 50%
+        let lines = vec![
+            make_rsr_event("run-reliable", "agent-a", 4_000, 0.40, true,  "2026-02-01T10:00:00Z"),
+            make_rsr_event("run-reliable", "agent-b", 4_000, 0.40, true,  "2026-02-01T10:01:00Z"),
+            make_rsr_event("run-flaky",    "agent-c", 3_000, 0.30, true,  "2026-02-01T10:02:00Z"),
+            make_rsr_event("run-flaky",    "agent-d", 3_000, 0.30, false, "2026-02-01T10:03:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_run_success_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_run_success_rank_filters_by_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        let lines = vec![
+            make_rsr_event("run-keep", "agent-a", 5_000, 0.50, true,  "2026-02-01T10:00:00Z"),
+            make_rsr_event("run-skip", "agent-b", 2_000, 0.20, false, "2026-02-01T10:01:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_run_success_rank(&path, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }
