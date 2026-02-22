@@ -1,7 +1,7 @@
 """Delegation Analytics Charts.
 
 Cross-run charts built from the delegation JSONL log. All charts are
-read-only and fall back gracefully to mock data when no real log exists.
+read-only and show an empty state when no real log or data is present.
 Uses the Matrix Green color theme (#5FAF87, #87D7AF) consistent with
 all other analytics components.
 """
@@ -3624,18 +3624,6 @@ def render_weekday_table(run_id: Optional[str] = None) -> None:
         cost += float(ev.get("cost_usd", 0.0) or 0.0)
         slots[idx] = (count, success_count, tokens, cost)
 
-    # --- mock data when no real events are present ---
-    if all(s[0] == 0 for s in slots):
-        slots = [
-            (42, 40, 312_400, 0.8821),   # Mon
-            (38, 36, 287_100, 0.7934),   # Tue
-            (45, 43, 334_200, 0.9412),   # Wed
-            (39, 37, 291_800, 0.8103),   # Thu
-            (31, 29, 228_600, 0.6247),   # Fri
-            (0, 0, 0, 0.0),              # Sat
-            (0, 0, 0, 0.0),             # Sun
-        ]
-
     rows = []
     total_delegations = 0
     total_success = 0
@@ -3720,14 +3708,6 @@ def render_weekly_table(run_id: Optional[str] = None) -> None:
         tokens += int(ev.get("tokens_used", 0) or 0)
         cost += float(ev.get("cost_usd", 0.0) or 0.0)
         week_map[key] = (count, success_count, tokens, cost)
-
-    # --- mock data when no real events are present ---
-    if not week_map:
-        week_map = {
-            "2026-W06": (38, 36, 284_100, 0.7812),
-            "2026-W07": (45, 43, 334_500, 0.9344),
-            "2026-W08": (41, 39, 308_200, 0.8621),
-        }
 
     rows = []
     total_delegations = 0
@@ -3815,16 +3795,6 @@ def render_depth_bucket_table(run_id: Optional[str] = None) -> None:
         cost += float(ev.get("cost_usd", 0.0) or 0.0)
         buckets[idx] = (count, success_count, tokens, cost)
 
-    # --- mock data when no real events are present ---
-    if all(b[0] == 0 for b in buckets):
-        buckets = [
-            (62, 60, 468_200, 1.2943),   # root (0)
-            (38, 36, 284_100, 0.7812),   # sub (1)
-            (14, 13, 103_500, 0.2841),   # deep (2)
-            (0, 0, 0, 0.0),             # deeper (3)
-            (0, 0, 0, 0.0),             # very deep (4+)
-        ]
-
     rows = []
     total_delegations = 0
     total_success = 0
@@ -3910,15 +3880,6 @@ def render_model_tier_table(run_id: Optional[str] = None) -> None:
         cost += float(ev.get("cost_usd", 0.0) or 0.0)
         tiers[idx] = (count, success_count, tokens, cost)
 
-    # --- mock data when no real events are present ---
-    if all(t[0] == 0 for t in tiers):
-        tiers = [
-            (18, 18, 89_400, 0.1124),    # haiku
-            (72, 69, 538_200, 1.4893),   # sonnet
-            (24, 22, 198_600, 0.8341),   # opus
-            (0, 0, 0, 0.0),             # other
-        ]
-
     rows = []
     total_delegations = 0
     total_success = 0
@@ -4003,15 +3964,6 @@ def render_provider_tier_table(run_id: Optional[str] = None) -> None:
         tokens += int(ev.get("tokens_used", 0) or 0)
         cost += float(ev.get("cost_usd", 0.0) or 0.0)
         tiers[idx] = (count, success_count, tokens, cost)
-
-    # --- mock data when no real events are present ---
-    if all(t[0] == 0 for t in tiers):
-        tiers = [
-            (48, 46, 362_400, 0.9218),   # anthropic
-            (22, 21, 148_600, 0.4431),   # openai
-            (8, 7, 54_200, 0.1204),      # google
-            (0, 0, 0, 0.0),             # other
-        ]
 
     rows = []
     total_delegations = 0
@@ -4107,15 +4059,6 @@ def render_time_of_day_table(run_id: Optional[str] = None) -> None:
         cost += float(ev.get("cost_usd", 0.0) or 0.0)
         buckets[idx] = (count, success_count, tokens, cost)
 
-    # --- mock data when no real events are present ---
-    if all(b[0] == 0 for b in buckets):
-        buckets = [
-            (12, 11, 84_600, 0.2138),    # night
-            (34, 33, 248_200, 0.6714),   # morning
-            (41, 39, 312_400, 0.8293),   # afternoon
-            (27, 26, 194_800, 0.5021),   # evening
-        ]
-
     rows = []
     total_delegations = 0
     total_success = 0
@@ -4199,17 +4142,6 @@ def render_day_of_month_table(run_id: Optional[str] = None) -> None:
         tokens += int(ev.get("tokens_used", 0) or 0)
         cost += float(ev.get("cost_usd", 0.0) or 0.0)
         day_map[day] = (count, success_count, tokens, cost)
-
-    # --- mock data when no real events are present ---
-    if not day_map:
-        day_map = {
-            1: (8, 8, 58_400, 0.1482),
-            5: (14, 13, 102_600, 0.2714),
-            9: (22, 21, 167_800, 0.4293),
-            15: (31, 30, 238_400, 0.6021),
-            22: (18, 17, 134_200, 0.3518),
-            28: (11, 10, 82_600, 0.2147),
-        }
 
     rows = []
     total_delegations = 0
@@ -4303,15 +4235,6 @@ def render_token_efficiency_table(run_id: Optional[str] = None) -> None:
             success_count += 1
         tiers[idx] = (count, success_count, t + tokens, c + cost)
 
-    # --- mock data when no real events are present ---
-    if all(t[0] == 0 for t in tiers):
-        tiers = [
-            (24, 23, 186_000, 0.1488),   # very cheap  (~$0.0008/1k — haiku-like)
-            (58, 56, 438_400, 2.1920),   # cheap        (~$0.005/1k — sonnet-like)
-            (22, 20, 168_200, 2.5230),   # moderate     (~$0.015/1k — opus-like)
-            (4, 4, 28_600, 0.8294),      # expensive    (high-cost calls)
-        ]
-
     rows = []
     total_delegations = 0
     total_success = 0
@@ -4397,10 +4320,6 @@ def render_success_breakdown_table(run_id: Optional[str] = None) -> None:
                 buckets[idx][0] += 1
                 buckets[idx][1] += tokens
                 buckets[idx][2] += cost
-    else:
-        # Mock data: realistic ~92% success rate
-        buckets = [[276, 1_840_000, 34.6920], [24, 158_000, 2.9740]]
-        total_delegations = 300
 
     total_cost = sum(b[2] for b in buckets)
     total_success = buckets[0][0]
@@ -4484,13 +4403,6 @@ def render_agent_cost_rank_table(run_id: Optional[str] = None) -> None:
                     agent_map[agent][1] += 1
                 agent_map[agent][2] += tokens
                 agent_map[agent][3] += cost
-    else:
-        # Mock data: three agents with different avg costs
-        agent_map = {
-            "research": [48, 45, 640_000, 12.8800],
-            "orchestrator": [120, 117, 800_000, 8.0000],
-            "writer": [32, 31, 180_000, 1.4400],
-        }
 
     if not agent_map:
         st.info("No delegation events found.")
@@ -4578,13 +4490,6 @@ def render_model_cost_rank_table(run_id: Optional[str] = None) -> None:
                     model_map[model][1] += 1
                 model_map[model][2] += tokens
                 model_map[model][3] += cost
-    else:
-        # Mock data: three models with distinct avg costs
-        model_map = {
-            "claude-opus-4-6":   [18, 17, 270_000, 14.4000],
-            "claude-sonnet-4-6": [142, 138, 946_000, 18.9200],
-            "claude-haiku-4-5":  [40, 40,  80_000,  0.4800],
-        }
 
     if not model_map:
         st.info("No delegation events found.")
@@ -4671,13 +4576,6 @@ def render_provider_cost_rank_table(run_id: Optional[str] = None) -> None:
                     provider_map[provider][1] += 1
                 provider_map[provider][2] += tokens
                 provider_map[provider][3] += cost
-    else:
-        # Mock data: three providers with distinct avg costs
-        provider_map = {
-            "anthropic": [160, 155, 1_180_000, 64.0000],
-            "openai":    [30,  28,   120_000,   4.5000],
-            "google":    [10,  10,    40_000,    0.2000],
-        }
 
     if not provider_map:
         st.info("No delegation events found.")
@@ -4764,13 +4662,6 @@ def render_run_cost_rank_table(run_id: Optional[str] = None) -> None:
                     run_map[rid][1] += 1
                 run_map[rid][2] += tokens
                 run_map[rid][3] += cost
-    else:
-        # Mock data: three runs with distinct total costs
-        run_map = {
-            "run-alpha": [120, 115, 900_000, 28.5000],
-            "run-beta":  [45,  42,  280_000, 12.8000],
-            "run-gamma": [35,  35,  100_000,  4.2000],
-        }
 
     if not run_map:
         st.info("No delegation events found.")
@@ -4858,13 +4749,6 @@ def render_agent_success_rank_table(run_id: Optional[str] = None) -> None:
                     agent_map[agent][1] += 1
                 agent_map[agent][2] += tokens
                 agent_map[agent][3] += cost
-    else:
-        # Mock data: three agents with distinct success rates
-        agent_map = {
-            "orchestrator": [120, 119, 840_000, 8.0000],
-            "research":     [48,  42,  288_000, 12.8800],
-            "writer":       [32,  24,  160_000,  1.4400],
-        }
 
     if not agent_map:
         st.info("No delegation events found.")
@@ -4953,13 +4837,6 @@ def render_model_success_rank_table(run_id: Optional[str] = None) -> None:
                     model_map[model][1] += 1
                 model_map[model][2] += tokens
                 model_map[model][3] += cost
-    else:
-        # Mock data: three models with distinct success rates
-        model_map = {
-            "claude-haiku-4-5":  [40,  40,  80_000,  0.4800],
-            "claude-sonnet-4-6": [142, 138, 946_000, 18.9200],
-            "claude-opus-4-6":   [18,  15,  270_000, 14.4000],
-        }
 
     if not model_map:
         st.info("No delegation events found.")
@@ -5048,13 +4925,6 @@ def render_provider_success_rank_table(run_id: Optional[str] = None) -> None:
                     provider_map[provider][1] += 1
                 provider_map[provider][2] += tokens
                 provider_map[provider][3] += cost
-    else:
-        # Mock data: three providers with distinct success rates
-        provider_map = {
-            "google":    [10,  10,   40_000,  0.2000],
-            "anthropic": [160, 155, 1_180_000, 64.0000],
-            "openai":    [30,  26,   120_000,   4.5000],
-        }
 
     if not provider_map:
         st.info("No delegation events found.")
@@ -5143,13 +5013,6 @@ def render_run_success_rank_table(run_id: Optional[str] = None) -> None:
                     run_map[rid][1] += 1
                 run_map[rid][2] += tokens
                 run_map[rid][3] += cost
-    else:
-        # Mock data: three runs with distinct success rates
-        run_map = {
-            "run-alpha": [120, 120,  900_000, 18.0000],
-            "run-beta":  [ 80,  74,  480_000,  9.6000],
-            "run-gamma": [ 40,  30,  160_000,  3.2000],
-        }
 
     if not run_map:
         st.info("No delegation events found.")
@@ -5238,13 +5101,6 @@ def render_agent_token_rank_table(run_id: Optional[str] = None) -> None:
                     agent_map[agent][1] += 1
                 agent_map[agent][2] += tokens
                 agent_map[agent][3] += cost
-    else:
-        # Mock data: three agents with distinct avg-token profiles
-        agent_map = {
-            "builder":    [80, 76, 1_600_000, 48.0000],
-            "researcher": [60, 57,   720_000, 18.0000],
-            "summarizer": [40, 39,   200_000,  4.0000],
-        }
 
     if not agent_map:
         st.info("No delegation events found.")
@@ -5332,13 +5188,6 @@ def render_model_token_rank_table(run_id: Optional[str] = None) -> None:
                     model_map[model][1] += 1
                 model_map[model][2] += tokens
                 model_map[model][3] += cost
-    else:
-        # Mock data: three models with distinct avg-token profiles
-        model_map = {
-            "claude-opus-4-5":   [50, 48, 1_000_000, 60.0000],
-            "claude-sonnet-4-5": [90, 87,   900_000, 27.0000],
-            "claude-haiku-4-5":  [60, 59,   180_000,  3.0000],
-        }
 
     if not model_map:
         st.info("No delegation events found.")
@@ -5426,13 +5275,6 @@ def render_provider_token_rank_table(run_id: Optional[str] = None) -> None:
                     provider_map[provider][1] += 1
                 provider_map[provider][2] += tokens
                 provider_map[provider][3] += cost
-    else:
-        # Mock data: three providers with distinct avg-token profiles
-        provider_map = {
-            "anthropic": [160, 155, 1_440_000, 72.0000],
-            "openai":    [30,  28,   150_000,   4.5000],
-            "google":    [10,  10,    30_000,   0.3000],
-        }
 
     if not provider_map:
         st.info("No delegation events found.")
@@ -5520,13 +5362,6 @@ def render_run_token_rank_table(run_id: Optional[str] = None) -> None:
                     run_map[rid][1] += 1
                 run_map[rid][2] += tokens
                 run_map[rid][3] += cost
-    else:
-        # Mock data: three runs with distinct avg-token profiles
-        run_map = {
-            "run-alpha": [50,  48,  1_000_000, 20.0000],
-            "run-beta":  [80,  77,    640_000, 12.8000],
-            "run-gamma": [40,  40,     80_000,  1.6000],
-        }
 
     if not run_map:
         st.info("No delegation events found.")
@@ -5616,13 +5451,6 @@ def render_agent_duration_rank_table(run_id: Optional[str] = None) -> None:
                     agent_map[agent][1] += 1
                 agent_map[agent][2] += int(duration_ms)
                 agent_map[agent][3] += cost
-    else:
-        # Mock data: three agents with distinct avg-duration profiles
-        agent_map = {
-            "research":     [60, 57, 2_700_000, 18.0000],
-            "writer":       [80, 76,   960_000, 12.0000],
-            "orchestrator": [40, 39,   120_000,  2.0000],
-        }
 
     if not agent_map:
         st.info("No delegation events found.")
@@ -5712,13 +5540,6 @@ def render_model_duration_rank_table(run_id: Optional[str] = None) -> None:
                     model_map[model][1] += 1
                 model_map[model][2] += int(duration_ms)
                 model_map[model][3] += cost
-    else:
-        # Mock data: three models with distinct avg-duration profiles
-        model_map = {
-            "claude-opus-4-5":   [50, 48, 3_000_000, 60.0000],
-            "claude-sonnet-4-5": [90, 87, 1_800_000, 27.0000],
-            "claude-haiku-4-5":  [60, 59,   180_000,  3.0000],
-        }
 
     if not model_map:
         st.info("No delegation events found.")
@@ -5808,13 +5629,6 @@ def render_provider_duration_rank_table(run_id: Optional[str] = None) -> None:
                     provider_map[provider][1] += 1
                 provider_map[provider][2] += int(duration_ms)
                 provider_map[provider][3] += cost
-    else:
-        # Mock data: three providers with distinct avg-duration profiles
-        provider_map = {
-            "anthropic": [100, 97, 4_500_000, 45.0000],
-            "openai":    [ 60, 57, 1_800_000, 18.0000],
-            "google":    [ 40, 39,   600_000,  4.0000],
-        }
 
     if not provider_map:
         st.info("No delegation events found.")
@@ -5905,13 +5719,6 @@ def render_run_duration_rank_table(run_id: Optional[str] = None) -> None:
                     run_map[rid][1] += 1
                 run_map[rid][2] += int(duration_ms)
                 run_map[rid][3] += cost
-    else:
-        # Mock data: three runs with distinct avg-duration profiles
-        run_map = {
-            "run-alpha": [30,  29,  1_800_000, 18.0000],
-            "run-beta":  [60,  58,  1_200_000, 12.0000],
-            "run-gamma": [80,  80,    240_000,  2.4000],
-        }
 
     if not run_map:
         st.info("No delegation events found.")
