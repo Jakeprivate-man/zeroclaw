@@ -408,7 +408,9 @@ Examples:
   zeroclaw delegations providers     # provider breakdown: tokens and cost per provider
   zeroclaw delegations providers --run <id>  # provider breakdown for one run
   zeroclaw delegations depth         # depth breakdown: delegations per nesting level
-  zeroclaw delegations depth --run <id>  # depth breakdown for one run")]
+  zeroclaw delegations depth --run <id>  # depth breakdown for one run
+  zeroclaw delegations errors        # list all failed delegations with error messages
+  zeroclaw delegations errors --run <id>  # failures for one run")]
     Delegations {
         #[command(subcommand)]
         delegation_command: Option<DelegationCommands>,
@@ -543,6 +545,23 @@ Examples:
   zeroclaw delegations depth --run <id>  # scope to one run")]
     Depth {
         /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
+    /// List failed delegations with agent, depth, duration, and error message
+    #[command(long_about = "\
+List all failed delegations from the log, ordered by timestamp (oldest first).
+
+Only `DelegationEnd` events where `success` is false are shown. Error messages
+are truncated to 80 characters. Use `--run` to focus on a single invocation.
+
+Output columns: # | run (prefix) | agent | depth | duration | error
+
+Examples:
+  zeroclaw delegations errors              # all runs, oldest failure first
+  zeroclaw delegations errors --run <id>  # failures for one run")]
+    Errors {
+        /// Scope to a specific run ID (default: show all runs)
         #[arg(long)]
         run: Option<String>,
     },
@@ -1216,6 +1235,9 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::Depth { run }) => {
                     observability::delegation_report::print_depth(&log_path, run.as_deref())
+                }
+                Some(DelegationCommands::Errors { run }) => {
+                    observability::delegation_report::print_errors(&log_path, run.as_deref())
                 }
                 Some(DelegationCommands::Diff { run_a, run_b }) => {
                     observability::delegation_report::print_diff(
