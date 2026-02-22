@@ -3057,6 +3057,145 @@ def render_provider_model_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_agent_provider_table(run_id: Optional[str] = None) -> None:
+    """Agent × provider cross-product breakdown table, ranked by tokens consumed.
+
+    Mirrors ``zeroclaw delegations agent-provider [--run <id>]`` as a Streamlit
+    dataframe. Groups all completed delegations by the (agent_name × provider)
+    cross-product and ranks pairs by total tokens consumed (descending).
+
+    Missing ``agent_name`` or ``provider`` fields are substituted with
+    ``"unknown"``, matching the CLI behaviour.
+
+    Completes the cross-product triad alongside agent-model and provider-model.
+
+    Columns: # | Agent | Provider | Delegations | Tokens | Cost ($)
+
+    A caption below the table summarises total distinct combinations, total
+    delegation count, and cumulative cost — mirroring the CLI footer line.
+
+    Falls back to a synthetic mock example when no real data is present.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` aggregates all runs.
+    """
+    import pandas as pd
+
+    scope = f"[{run_id[:8]}…]" if run_id is not None else "(all runs)"
+    st.markdown(f"#### Agent \u00d7 Provider Breakdown {scope}")
+
+    parser = DelegationParser()
+    events = parser._read_events(run_id)
+
+    if not events:
+        st.caption("No delegation data available — showing mock example")
+        rows = [
+            {
+                "#": 1,
+                "Agent": "researcher",
+                "Provider": "anthropic",
+                "Delegations": 47,
+                "Tokens": 28_200,
+                "Cost ($)": "$0.0846",
+            },
+            {
+                "#": 2,
+                "Agent": "coder",
+                "Provider": "anthropic",
+                "Delegations": 23,
+                "Tokens": 13_800,
+                "Cost ($)": "$0.0414",
+            },
+            {
+                "#": 3,
+                "Agent": "coder",
+                "Provider": "openai",
+                "Delegations": 8,
+                "Tokens": 4_800,
+                "Cost ($)": "$0.0144",
+            },
+        ]
+        df = pd.DataFrame(rows)
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+                "Agent": st.column_config.TextColumn("Agent"),
+                "Provider": st.column_config.TextColumn("Provider"),
+                "Delegations": st.column_config.NumberColumn("Delegations", format="%d"),
+                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
+            },
+        )
+        st.caption(
+            "3 combination(s)  \u2022  78 total delegations  \u2022  $0.1404 total cost (mock)"
+        )
+        return
+
+    # Aggregate by (agent × provider); value = [count, tokens, cost].
+    pair_stats: dict[tuple[str, str], list] = {}
+    for ev in events:
+        if ev.get("event_type") != "DelegationEnd":
+            continue
+        agent = ev.get("agent_name") or "unknown"
+        provider = ev.get("provider") or "unknown"
+        key = (agent, provider)
+        tokens = int(ev.get("tokens_used") or 0)
+        cost = float(ev.get("cost_usd") or 0.0)
+        if key not in pair_stats:
+            pair_stats[key] = [0, 0, 0.0]
+        pair_stats[key][0] += 1
+        pair_stats[key][1] += tokens
+        pair_stats[key][2] += cost
+
+    if not pair_stats:
+        st.caption("No completed delegations found in the selected scope.")
+        return
+
+    # Sort by tokens descending, then by (agent, provider) alphabetically.
+    sorted_pairs = sorted(
+        pair_stats.items(),
+        key=lambda item: (-item[1][1], item[0][0], item[0][1]),
+    )
+
+    rows = []
+    total_delegations = 0
+    total_cost = 0.0
+    for rank, ((agent, provider), (count, tokens, cost)) in enumerate(sorted_pairs, start=1):
+        rows.append({
+            "#": rank,
+            "Agent": agent,
+            "Provider": provider,
+            "Delegations": count,
+            "Tokens": tokens,
+            "Cost ($)": f"${cost:.4f}",
+        })
+        total_delegations += count
+        total_cost += cost
+
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+            "Agent": st.column_config.TextColumn("Agent"),
+            "Provider": st.column_config.TextColumn("Provider"),
+            "Delegations": st.column_config.NumberColumn("Delegations", format="%d"),
+            "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+            "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
+        },
+    )
+    n_combos = len(sorted_pairs)
+    st.caption(
+        f"{n_combos} combination(s)  \u2022  {total_delegations} total delegations  "
+        f"\u2022  ${total_cost:.4f} total cost"
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
