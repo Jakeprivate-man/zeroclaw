@@ -950,6 +950,12 @@ Examples:
         #[arg(long)]
         run: Option<String>,
     },
+    /// Histogram of delegations grouped by cost bucket (<$0.001, $0.001–$0.01, $0.01–$0.10, $0.10–$1.00, ≥$1.00)
+    CostBucket {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
 Compare per-agent delegation statistics between two runs side-by-side.
@@ -1697,6 +1703,12 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::TokenBucket { run }) => {
                     observability::delegation_report::print_token_bucket(
+                        &log_path,
+                        run.as_deref(),
+                    )
+                }
+                Some(DelegationCommands::CostBucket { run }) => {
+                    observability::delegation_report::print_cost_bucket(
                         &log_path,
                         run.as_deref(),
                     )
