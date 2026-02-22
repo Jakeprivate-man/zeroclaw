@@ -306,6 +306,9 @@ def render() -> None:
         # Depth bucket histogram table (scoped to selected run when set)
         delegation_charts.render_depth_bucket_table(run_id=selected_run_id)
 
+        # Model-tier breakdown table (scoped to selected run when set)
+        delegation_charts.render_model_tier_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
