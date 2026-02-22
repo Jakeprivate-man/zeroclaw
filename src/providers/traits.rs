@@ -49,13 +49,27 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
-/// An LLM response that may contain text, tool calls, or both.
+/// Token usage reported by a provider for a single request.
+///
+/// Populated when the provider exposes usage data (e.g. OpenRouter, Anthropic).
+/// `None` when the provider does not report token counts.
 #[derive(Debug, Clone)]
+pub struct ProviderUsage {
+    /// Input (prompt) tokens consumed.
+    pub prompt_tokens: u64,
+    /// Output (completion) tokens generated.
+    pub completion_tokens: u64,
+}
+
+/// An LLM response that may contain text, tool calls, or both.
+#[derive(Debug, Clone, Default)]
 pub struct ChatResponse {
     /// Text content of the response (may be empty if only tool calls).
     pub text: Option<String>,
     /// Tool calls requested by the LLM.
     pub tool_calls: Vec<ToolCall>,
+    /// Token usage for this request, when reported by the provider.
+    pub usage: Option<ProviderUsage>,
 }
 
 impl ChatResponse {
@@ -344,6 +358,7 @@ pub trait Provider: Send + Sync {
                 return Ok(ChatResponse {
                     text: Some(text),
                     tool_calls: Vec::new(),
+                    usage: None,
                 });
             }
         }
@@ -354,6 +369,7 @@ pub trait Provider: Send + Sync {
         Ok(ChatResponse {
             text: Some(text),
             tool_calls: Vec::new(),
+            usage: None,
         })
     }
 
@@ -387,6 +403,7 @@ pub trait Provider: Send + Sync {
         Ok(ChatResponse {
             text: Some(text),
             tool_calls: Vec::new(),
+            usage: None,
         })
     }
 
@@ -510,6 +527,7 @@ mod tests {
         let empty = ChatResponse {
             text: None,
             tool_calls: vec![],
+            usage: None,
         };
         assert!(!empty.has_tool_calls());
         assert_eq!(empty.text_or_empty(), "");
@@ -521,6 +539,7 @@ mod tests {
                 name: "shell".into(),
                 arguments: "{}".into(),
             }],
+            usage: None,
         };
         assert!(with_tools.has_tool_calls());
         assert_eq!(with_tools.text_or_empty(), "Let me check");

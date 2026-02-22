@@ -52,6 +52,7 @@ mod agent;
 mod approval;
 mod auth;
 mod channels;
+mod cost;
 mod rag {
     pub use zeroclaw::rag::*;
 }

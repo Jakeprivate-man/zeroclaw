@@ -885,6 +885,7 @@ pub(crate) async fn agent_turn(
         max_tool_iterations,
         None,
         None,
+        None,
     )
     .await
 }
@@ -1058,6 +1059,7 @@ pub(crate) async fn run_tool_call_loop(
     max_tool_iterations: usize,
     cancellation_token: Option<CancellationToken>,
     on_delta: Option<tokio::sync::mpsc::Sender<String>>,
+    cost_tracker: Option<Arc<crate::cost::CostTracker>>,
 ) -> Result<String> {
     let max_iterations = if max_tool_iterations == 0 {
         DEFAULT_MAX_TOOL_ITERATIONS
@@ -1136,6 +1138,16 @@ pub(crate) async fn run_tool_call_loop(
                         success: true,
                         error_message: None,
                     });
+
+                    if let (Some(ref usage), Some(ref tracker)) = (&resp.usage, &cost_tracker) {
+                        if let Err(e) = tracker.record_model_usage(
+                            model,
+                            usage.prompt_tokens,
+                            usage.completion_tokens,
+                        ) {
+                            tracing::warn!("Failed to record model usage: {e}");
+                        }
+                    }
 
                     let response_text = resp.text_or_empty().to_string();
                     // First try native structured tool calls (OpenAI-format).
@@ -1417,6 +1429,22 @@ pub async fn run(
         model: model_name.to_string(),
     });
 
+    // ── Cost tracker ─────────────────────────────────────────────
+    let cost_tracker: Option<Arc<crate::cost::CostTracker>> = if config.cost.enabled {
+        match crate::cost::CostTracker::new(config.cost.clone(), &config.workspace_dir) {
+            Ok(tracker) => {
+                tracing::info!("Cost tracking enabled");
+                Some(Arc::new(tracker))
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize cost tracker: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // ── Hardware RAG (datasheet retrieval when peripherals + datasheet_dir) ──
     let hardware_rag: Option<crate::rag::HardwareRag> = config
         .peripherals
@@ -1616,6 +1644,7 @@ pub async fn run(
             config.agent.max_tool_iterations,
             None,
             None,
+            cost_tracker.clone(),
         )
         .await?;
         final_output = response.clone();
@@ -1735,6 +1764,7 @@ pub async fn run(
                 config.agent.max_tool_iterations,
                 None,
                 None,
+                cost_tracker.clone(),
             )
             .await
             {
@@ -1775,12 +1805,17 @@ pub async fn run(
     }
 
     let duration = start.elapsed();
+    let (tokens_used, cost_usd) = cost_tracker
+        .as_ref()
+        .and_then(|t: &Arc<crate::cost::CostTracker>| t.get_summary().ok())
+        .map(|s| (Some(s.total_tokens), Some(s.session_cost_usd)))
+        .unwrap_or((None, None));
     observer.record_event(&ObserverEvent::AgentEnd {
         provider: provider_name.to_string(),
         model: model_name.to_string(),
         duration,
-        tokens_used: None,
-        cost_usd: None,
+        tokens_used,
+        cost_usd,
     });
 
     Ok(final_output)
@@ -2058,6 +2093,7 @@ mod tests {
             Ok(ChatResponse {
                 text: Some("vision-ok".to_string()),
                 tool_calls: Vec::new(),
+                usage: None,
             })
         }
     }
@@ -2073,6 +2109,7 @@ mod tests {
                 .map(|text| ChatResponse {
                     text: Some(text.to_string()),
                     tool_calls: Vec::new(),
+                    usage: None,
                 })
                 .collect();
             Self {
@@ -2205,6 +2242,7 @@ mod tests {
             3,
             None,
             None,
+            None,
         )
         .await
         .expect_err("provider without vision support should fail");
@@ -2249,6 +2287,7 @@ mod tests {
             3,
             None,
             None,
+            None,
         )
         .await
         .expect_err("oversized payload must fail");
@@ -2285,6 +2324,7 @@ mod tests {
             "cli",
             &crate::config::MultimodalConfig::default(),
             3,
+            None,
             None,
             None,
         )
@@ -2405,6 +2445,7 @@ mod tests {
             "telegram",
             &crate::config::MultimodalConfig::default(),
             4,
+            None,
             None,
             None,
         )
