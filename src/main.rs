@@ -1006,6 +1006,27 @@ Examples:
         #[arg(long)]
         run: Option<String>,
     },
+    /// Aggregate delegations by model-family tier (haiku / sonnet / opus / other)
+    #[command(long_about = "\
+Aggregate all completed delegations by model-family tier and print a
+breakdown table ordered haiku → sonnet → opus → other.  Empty tiers are omitted.
+
+Tier assignment uses a case-insensitive substring match on the model field:
+  haiku   model name contains \"haiku\"
+  sonnet  model name contains \"sonnet\"
+  opus    model name contains \"opus\"
+  other   everything else (including missing/null)
+
+Output columns: tier | count | ok% | tokens | cost
+
+Examples:
+  zeroclaw delegations model-tier              # all runs
+  zeroclaw delegations model-tier --run <id>   # one run only")]
+    ModelTier {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
 Compare per-agent delegation statistics between two runs side-by-side.
@@ -1777,6 +1798,12 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::DepthBucket { run }) => {
                     observability::delegation_report::print_depth_bucket(
+                        &log_path,
+                        run.as_deref(),
+                    )
+                }
+                Some(DelegationCommands::ModelTier { run }) => {
+                    observability::delegation_report::print_model_tier(
                         &log_path,
                         run.as_deref(),
                     )
