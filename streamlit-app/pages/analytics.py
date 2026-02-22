@@ -252,6 +252,9 @@ def render() -> None:
         # Active table — currently in-flight delegations (scoped to selected run when set)
         delegation_charts.render_active_table(run_id=selected_run_id)
 
+        # Agent history table — per-agent delegation history (scoped to selected run when set)
+        delegation_charts.render_agent_history_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
@@ -349,6 +352,15 @@ def render() -> None:
               show run prefix, agent, depth, start timestamp, and elapsed time;
               mirrors `zeroclaw delegations active`; scoped by the shared run
               selector; shows a mock example when no real log data is available
+            - **Agent History table** — text input for an agent name (exact,
+              case-sensitive match); shows every completed delegation for that
+              agent sorted newest first; columns show run prefix, depth, duration,
+              tokens, cost, ok flag, and finish timestamp; a caption line below
+              summarises total occurrences, success count, cumulative tokens, and
+              cumulative cost; mirrors `zeroclaw delegations agent <name>`;
+              scoped by the shared run selector; shows a mock example when no
+              real log data is available; hides the table and returns early when
+              the agent name field is left blank
             - **Agent Leaderboard** — horizontal bar chart ranking all agents by
               cumulative tokens or cost across every stored run; rank-by and top-N
               controls mirror `zeroclaw delegations top`; falls back to a mock
