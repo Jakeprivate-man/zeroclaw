@@ -3183,6 +3183,123 @@ pub fn print_agent_model(log_path: &Path, run_id: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Groups `DelegationEnd` events by the (provider × model) cross-product
+/// and ranks them by total tokens consumed (descending).  When `provider`
+/// or `model` is absent the value is substituted with `"unknown"`.  Use
+/// `run_id` to scope to a single run; `None` aggregates across every stored
+/// run.
+///
+/// Output columns: # | provider | model | delegations | tokens | cost
+pub fn print_provider_model(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    let events: Vec<&Value> = if let Some(rid) = run_id {
+        all_events
+            .iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events.iter().collect()
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    // Aggregate by (provider × model); value = (count, tokens, cost).
+    let mut map: HashMap<String, (usize, u64, f64)> = HashMap::new();
+    for ev in &events {
+        if ev.get("event_type").and_then(|x| x.as_str()) != Some("DelegationEnd") {
+            continue;
+        }
+        let provider = ev
+            .get("provider")
+            .and_then(|x| x.as_str())
+            .unwrap_or("unknown");
+        let model = ev
+            .get("model")
+            .and_then(|x| x.as_str())
+            .unwrap_or("unknown");
+        let key = format!("{provider}/{model}");
+        let tokens = ev
+            .get("tokens_used")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        let cost = ev
+            .get("cost_usd")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0);
+        let entry = map.entry(key).or_insert((0, 0, 0.0));
+        entry.0 += 1;
+        entry.1 += tokens;
+        entry.2 += cost;
+    }
+
+    let mut rows: Vec<(String, usize, u64, f64)> = map
+        .into_iter()
+        .map(|(k, (count, tokens, cost))| (k, count, tokens, cost))
+        .collect();
+    rows.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!("Provider \u{d7} Model Breakdown{scope}");
+    println!();
+    println!(
+        "{:>3}  {:<14}  {:<20}  {:>11}  {:>10}  {:>10}",
+        "#", "provider", "model", "delegations", "tokens", "cost"
+    );
+    println!("{}", "─".repeat(78));
+
+    let mut total_count: usize = 0;
+    let mut total_tokens: u64 = 0;
+    let mut total_cost: f64 = 0.0;
+
+    for (rank, (key, count, tokens, cost)) in rows.iter().enumerate() {
+        let (provider, model) = key
+            .split_once('/')
+            .unwrap_or((key.as_str(), "unknown"));
+        let tok_str = if *tokens > 0 {
+            tokens.to_string()
+        } else {
+            "\u{2014}".to_owned()
+        };
+        let cost_str = if *cost > 0.0 {
+            format!("${cost:.4}")
+        } else {
+            "\u{2014}".to_owned()
+        };
+        println!(
+            "{:>3}  {:<14}  {:<20}  {:>11}  {:>10}  {:>10}",
+            rank + 1,
+            provider,
+            model,
+            count,
+            tok_str,
+            cost_str,
+        );
+        total_count += count;
+        total_tokens += *tokens;
+        total_cost += cost;
+    }
+
+    println!("{}", "─".repeat(78));
+    println!(
+        "{}  combination(s)  \u{2022}  {} total delegations  \u{2022}  ${:.4} total cost",
+        rows.len(),
+        total_count,
+        total_cost,
+    );
+    Ok(())
+}
+
 /// `ExportFormat::Csv`: emits a header row followed by one row per
 /// `DelegationEnd` event with columns:
 /// `run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp`
@@ -6846,6 +6963,112 @@ mod tests {
         }
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_agent_model(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_provider_model_missing_log() {
+        let path =
+            std::path::PathBuf::from("/tmp/zeroclaw_no_such_file_provmodel.jsonl");
+        let result = print_provider_model(&path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_provider_model_empty_log() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_prov_model_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_provider_model(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_provider_model_no_ends() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_prov_model_noends.jsonl");
+        let ev = serde_json::json!({
+            "event_type": "DelegationStart",
+            "run_id": "run-1",
+            "agent_name": "researcher",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "timestamp": "2026-02-01T10:00:00Z",
+        });
+        std::fs::write(&path, serde_json::to_string(&ev).unwrap() + "\n").unwrap();
+        let result = print_provider_model(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_provider_model_groups_by_pair() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_prov_model_pairs.jsonl");
+        let mut lines = Vec::new();
+        for (provider, model) in &[
+            ("anthropic", "claude-sonnet-4-6"),
+            ("openai", "gpt-4o"),
+            ("anthropic", "claude-sonnet-4-6"),
+        ] {
+            lines.push(
+                serde_json::to_string(&make_end_p(
+                    "run-1", "researcher", provider, model, 0,
+                    "2026-02-01T10:00:00Z", 100, 0.001, true,
+                ))
+                .unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_provider_model(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_provider_model_tokens_desc() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_prov_model_tokdesc.jsonl");
+        let mut lines = Vec::new();
+        for (provider, model, tokens) in &[
+            ("openai", "gpt-4o", 500u64),
+            ("anthropic", "claude-sonnet-4-6", 1000u64),
+        ] {
+            lines.push(
+                serde_json::to_string(&make_end_p(
+                    "run-1", "researcher", provider, model, 0,
+                    "2026-02-01T10:00:00Z", *tokens, 0.001, true,
+                ))
+                .unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_provider_model(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_provider_model_filters_by_run() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_prov_model_runfilter.jsonl");
+        let mut lines = Vec::new();
+        for (run, provider, model) in &[
+            ("run-keep", "anthropic", "claude-sonnet-4-6"),
+            ("run-skip", "openai", "gpt-4o"),
+        ] {
+            lines.push(
+                serde_json::to_string(&make_end_p(
+                    run, "researcher", provider, model, 0,
+                    "2026-02-01T10:00:00Z", 100, 0.001, true,
+                ))
+                .unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_provider_model(&path, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }
