@@ -1891,6 +1891,167 @@ def render_provider_history_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_run_report_table(run_id: Optional[str] = None) -> None:
+    """Full chronological delegation report for a single run.
+
+    Mirrors ``zeroclaw delegations run <id>`` as an interactive Streamlit
+    dataframe. When a run is selected in the run selector, all completed
+    delegations for that run are shown in chronological order (oldest first,
+    no row limit), so the user can trace the sequence of agent invocations.
+
+    Unlike the history tables (agent/model/provider), this table does not
+    require a text input — the run is determined by the shared run selector.
+    If no run is selected, a prompt is shown instead.
+
+    Columns: # | Agent | Depth | Duration | Tokens | Cost ($) | Ok | Finished
+
+    A caption below the table summarises total completions, successes,
+    cumulative tokens, and cumulative cost — mirroring the CLI footer line.
+
+    Falls back to a synthetic mock example when no real data is present.
+
+    Args:
+        run_id: Run ID to report on. ``None`` shows a "select a run" prompt.
+    """
+    import pandas as pd
+
+    st.markdown("#### Run Delegation Report")
+
+    if run_id is None:
+        st.caption("Select a run from the dropdown above to view its full delegation report.")
+        return
+
+    scope_label = f"{run_id[:8]}…" if len(run_id) > 8 else run_id
+    st.markdown(f"Run: `{scope_label}`")
+
+    parser = DelegationParser()
+    events = parser._read_events(run_id)
+
+    if not events:
+        st.caption(f"No delegation data available — showing mock example for run {scope_label!r}")
+        rows = [
+            {
+                "#": 1,
+                "Agent": "research",
+                "Depth": 1,
+                "Duration": "3200ms",
+                "Tokens": 980,
+                "Cost ($)": "$0.0029",
+                "Ok": "yes",
+                "Finished": "2026-02-22 10:30:44",
+            },
+            {
+                "#": 2,
+                "Agent": "research",
+                "Depth": 1,
+                "Duration": "4512ms",
+                "Tokens": 1234,
+                "Cost ($)": "$0.0037",
+                "Ok": "yes",
+                "Finished": "2026-02-22 10:30:50",
+            },
+            {
+                "#": 3,
+                "Agent": "main",
+                "Depth": 0,
+                "Duration": "2100ms",
+                "Tokens": 654,
+                "Cost ($)": "$0.0019",
+                "Ok": "no",
+                "Finished": "2026-02-22 10:30:55",
+            },
+        ]
+        df = pd.DataFrame(rows)
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+                "Agent": st.column_config.TextColumn("Agent", width="medium"),
+                "Depth": st.column_config.NumberColumn("Depth", format="%d", width="small"),
+                "Duration": st.column_config.TextColumn("Duration", width="small"),
+                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
+                "Ok": st.column_config.TextColumn("Ok", width="small"),
+                "Finished": st.column_config.TextColumn("Finished"),
+            },
+        )
+        st.caption("3 completed — 2 succeeded • 2868 total tokens • $0.0085 total cost (mock)")
+        return
+
+    # Filter completed delegations for this run.
+    run_events = [
+        ev for ev in events
+        if ev.get("event_type") == "DelegationEnd"
+    ]
+
+    if not run_events:
+        st.caption(f"No completed delegations found for run {scope_label!r}.")
+        return
+
+    # Sort oldest first (chronological).
+    run_events.sort(key=lambda e: e.get("timestamp", ""))
+
+    rows = []
+    total_tokens = 0
+    total_cost = 0.0
+    success_count = 0
+    for i, ev in enumerate(run_events, start=1):
+        agent = ev.get("agent_name", "?")
+        depth = int(ev.get("depth", 0))
+        dur_ms = ev.get("duration_ms")
+        dur_str = f"{dur_ms}ms" if dur_ms is not None else "—"
+        tokens = int(ev.get("tokens_used") or 0)
+        cost = float(ev.get("cost_usd") or 0.0)
+        ok = ev.get("success", False)
+        ok_str = "yes" if ok else "no"
+        ts_str = ev.get("timestamp", "")
+        finished_str = "—"
+        if ts_str:
+            try:
+                finished_dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                finished_str = finished_dt.strftime("%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                pass
+        total_tokens += tokens
+        total_cost += cost
+        if ok:
+            success_count += 1
+        rows.append({
+            "#": i,
+            "Agent": agent,
+            "Depth": depth,
+            "Duration": dur_str,
+            "Tokens": tokens,
+            "Cost ($)": f"${cost:.4f}",
+            "Ok": ok_str,
+            "Finished": finished_str,
+        })
+
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+            "Agent": st.column_config.TextColumn("Agent", width="medium"),
+            "Depth": st.column_config.NumberColumn("Depth", format="%d", width="small"),
+            "Duration": st.column_config.TextColumn("Duration", width="small"),
+            "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+            "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
+            "Ok": st.column_config.TextColumn("Ok", width="small"),
+            "Finished": st.column_config.TextColumn("Finished"),
+        },
+    )
+    n = len(run_events)
+    st.caption(
+        f"{n} completed — {success_count} succeeded "
+        f"• {total_tokens} total tokens • ${total_cost:.4f} total cost"
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
