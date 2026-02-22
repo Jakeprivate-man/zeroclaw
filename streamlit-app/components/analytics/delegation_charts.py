@@ -2630,6 +2630,153 @@ def render_monthly_breakdown_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_quarterly_breakdown_table(run_id: Optional[str] = None) -> None:
+    """Per-calendar-quarter delegation breakdown table.
+
+    Mirrors ``zeroclaw delegations quarterly [--run <id>]`` as a Streamlit
+    dataframe. Groups all completed delegations by UTC calendar quarter
+    (YYYY-QN) and shows aggregate statistics per quarter, sorted oldest
+    quarter first.
+
+    Quarter boundaries mirror the CLI:
+      Jan–Mar → Q1 · Apr–Jun → Q2 · Jul–Sep → Q3 · Oct–Dec → Q4
+
+    The quarter key is derived from the month digits in the ISO-8601
+    timestamp (characters 5–6). BTreeMap-style lexicographic ordering of
+    ``YYYY-QN`` strings is identical to chronological ordering.
+
+    Like the other time-series tables, this is an aggregate table with no
+    additional input control — scope comes from the shared run selector.
+
+    Columns: Quarter | Count | Ok% | Tokens | Cost ($)
+
+    A caption below the table summarises total quarters, total delegations,
+    total successes, and cumulative cost — mirroring the CLI footer line.
+
+    Falls back to a synthetic mock example when no real data is present.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` aggregates all runs.
+    """
+    import pandas as pd
+
+    scope = f"[{run_id[:8]}…]" if run_id is not None else "(all runs)"
+    st.markdown(f"#### Quarterly Delegation Breakdown {scope}")
+
+    parser = DelegationParser()
+    events = parser._read_events(run_id)
+
+    _MONTH_TO_QUARTER = {
+        "01": "Q1", "02": "Q1", "03": "Q1",
+        "04": "Q2", "05": "Q2", "06": "Q2",
+        "07": "Q3", "08": "Q3", "09": "Q3",
+        "10": "Q4", "11": "Q4", "12": "Q4",
+    }
+
+    if not events:
+        st.caption("No delegation data available — showing mock example")
+        rows = [
+            {
+                "Quarter": "2025-Q4",
+                "Count": 31,
+                "Ok%": "96.8%",
+                "Tokens": 18_600,
+                "Cost ($)": "$0.0558",
+            },
+            {
+                "Quarter": "2026-Q1",
+                "Count": 132,
+                "Ok%": "98.5%",
+                "Tokens": 79_200,
+                "Cost ($)": "$0.2376",
+            },
+        ]
+        df = pd.DataFrame(rows)
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Quarter": st.column_config.TextColumn("Quarter", width="small"),
+                "Count": st.column_config.NumberColumn("Count", format="%d"),
+                "Ok%": st.column_config.TextColumn("Ok%", width="small"),
+                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
+            },
+        )
+        st.caption("2 quarter(s) • 163 total delegations • 159 succeeded • $0.2934 total cost (mock)")
+        return
+
+    # Collect completed delegations, group by UTC calendar quarter.
+    quarter_stats: dict[str, list] = {}
+    # quarter_stats[qkey] = [count, success_count, tokens, cost]
+    for ev in events:
+        if ev.get("event_type") != "DelegationEnd":
+            continue
+        ts = ev.get("timestamp", "")
+        if len(ts) < 7:
+            continue
+        month_str = ts[5:7]
+        q = _MONTH_TO_QUARTER.get(month_str)
+        if q is None:
+            continue
+        qkey = f"{ts[:4]}-{q}"
+        ok = bool(ev.get("success", False))
+        tokens = int(ev.get("tokens_used") or 0)
+        cost = float(ev.get("cost_usd") or 0.0)
+        if qkey not in quarter_stats:
+            quarter_stats[qkey] = [0, 0, 0, 0.0]
+        quarter_stats[qkey][0] += 1
+        if ok:
+            quarter_stats[qkey][1] += 1
+        quarter_stats[qkey][2] += tokens
+        quarter_stats[qkey][3] += cost
+
+    if not quarter_stats:
+        st.caption("No completed delegations found in the selected scope.")
+        return
+
+    # Sort oldest-first: YYYY-QN strings sort correctly lexicographically.
+    sorted_quarters = sorted(quarter_stats.keys())
+
+    rows = []
+    total_delegations = 0
+    total_success = 0
+    total_cost = 0.0
+    for qkey in sorted_quarters:
+        count, success_count, tokens, cost = quarter_stats[qkey]
+        ok_pct = f"{100.0 * success_count / count:.1f}%" if count > 0 else "—"
+        rows.append({
+            "Quarter": qkey,
+            "Count": count,
+            "Ok%": ok_pct,
+            "Tokens": tokens,
+            "Cost ($)": f"${cost:.4f}",
+        })
+        total_delegations += count
+        total_success += success_count
+        total_cost += cost
+
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Quarter": st.column_config.TextColumn("Quarter", width="small"),
+            "Count": st.column_config.NumberColumn("Count", format="%d"),
+            "Ok%": st.column_config.TextColumn("Ok%", width="small"),
+            "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+            "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
+        },
+    )
+    n_quarters = len(sorted_quarters)
+    st.caption(
+        f"{n_quarters} quarter(s)  •  {total_delegations} total delegations  "
+        f"•  {total_success} succeeded  •  ${total_cost:.4f} total cost"
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
