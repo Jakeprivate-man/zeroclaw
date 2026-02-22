@@ -422,7 +422,9 @@ Examples:
   zeroclaw delegations active             # all currently in-flight delegations
   zeroclaw delegations active --run <id>  # in-flight within one run
   zeroclaw delegations agent research              # history for agent research
-  zeroclaw delegations agent research --run <id>  # history within one run")]
+  zeroclaw delegations agent research --run <id>  # history within one run
+  zeroclaw delegations model claude-sonnet-4              # history for model
+  zeroclaw delegations model claude-sonnet-4 --run <id>   # history within one run")]
     Delegations {
         #[command(subcommand)]
         delegation_command: Option<DelegationCommands>,
@@ -676,6 +678,28 @@ Examples:
   zeroclaw delegations agent research --run <id>  # one run only")]
     Agent {
         /// Agent name to filter (exact match, case-sensitive)
+        name: String,
+        /// Scope to a specific run ID (default: show all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
+    /// Show all completed delegations for a named model, newest first
+    #[command(long_about = "\
+Show every completed delegation for a specific model name, sorted by finish
+timestamp descending (most recent first).  Only `DelegationEnd` events whose
+`model` field exactly matches <model> are shown.  Use `--run` to scope to a
+single invocation.
+
+Output columns: # | run | agent | depth | duration | tokens | cost | ok | finished (UTC)
+
+The footer shows total occurrences, success count, cumulative tokens, and
+cumulative cost for the queried model.
+
+Examples:
+  zeroclaw delegations model claude-sonnet-4              # all runs, newest first
+  zeroclaw delegations model claude-sonnet-4 --run <id>   # one run only")]
+    Model {
+        /// Model name to filter (exact match, case-sensitive)
         name: String,
         /// Scope to a specific run ID (default: show all runs)
         #[arg(long)]
@@ -1369,6 +1393,9 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::Agent { name, run }) => {
                     observability::delegation_report::print_agent(&log_path, &name, run.as_deref())
+                }
+                Some(DelegationCommands::Model { name, run }) => {
+                    observability::delegation_report::print_model(&log_path, &name, run.as_deref())
                 }
                 Some(DelegationCommands::Diff { run_a, run_b }) => {
                     observability::delegation_report::print_diff(
