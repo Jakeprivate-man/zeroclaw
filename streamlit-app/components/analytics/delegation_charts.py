@@ -4913,6 +4913,101 @@ def render_agent_success_rank_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_model_success_rank_table(run_id: Optional[str] = None) -> None:
+    """Table — models ranked by success rate (most reliable first).
+
+    Answers "which model is most reliable?" — mirrors agent-success-rank but
+    keyed by the model field.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` means all runs.
+    """
+    st.subheader("Model Success Rank")
+
+    # model → [count, success_count, tokens, cost]
+    model_map: dict = {}
+
+    log_path = _delegation_log_path()
+    if log_path.exists():
+        with log_path.open() as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    ev = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if ev.get("event_type") != "DelegationEnd":
+                    continue
+                if run_id and ev.get("run_id") != run_id:
+                    continue
+                model = ev.get("model") or "unknown"
+                success = bool(ev.get("success", False))
+                tokens = int(ev.get("tokens_used", 0) or 0)
+                cost = float(ev.get("cost_usd", 0.0) or 0.0)
+                if model not in model_map:
+                    model_map[model] = [0, 0, 0, 0.0]
+                model_map[model][0] += 1
+                if success:
+                    model_map[model][1] += 1
+                model_map[model][2] += tokens
+                model_map[model][3] += cost
+    else:
+        # Mock data: three models with distinct success rates
+        model_map = {
+            "claude-haiku-4-5":  [40,  40,  80_000,  0.4800],
+            "claude-sonnet-4-6": [142, 138, 946_000, 18.9200],
+            "claude-opus-4-6":   [18,  15,  270_000, 14.4000],
+        }
+
+    if not model_map:
+        st.info("No delegation events found.")
+        return
+
+    rows = []
+    for model, (count, ok, tokens, cost) in model_map.items():
+        failures = count - ok
+        avg_cost = cost / count if count > 0 else 0.0
+        avg_tokens = tokens / count if count > 0 else 0.0
+        ok_pct = 100.0 * ok / count if count > 0 else 0.0
+        rows.append({
+            "Model": model,
+            "Delegations": count,
+            "Ok%": f"{ok_pct:.1f}%",
+            "Failures": failures,
+            "Avg Cost ($)": f"{avg_cost:.4f}",
+            "Avg Tokens": round(avg_tokens),
+        })
+    # Sort: ok_pct desc, ties by delegations desc, then model asc
+    rows.sort(key=lambda r: (-float(r["Ok%"].rstrip("%")), -r["Delegations"], r["Model"]))
+    for i, r in enumerate(rows, 1):
+        r["#"] = i
+
+    total_delegations = sum(v[0] for v in model_map.values())
+    total_failures = sum(v[0] - v[1] for v in model_map.values())
+
+    df = pd.DataFrame(rows, columns=["#", "Model", "Delegations", "Ok%", "Failures", "Avg Cost ($)", "Avg Tokens"])
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+            "Model": st.column_config.TextColumn("Model"),
+            "Delegations": st.column_config.NumberColumn("Delegations", format="%d"),
+            "Ok%": st.column_config.TextColumn("Ok%", width="small"),
+            "Failures": st.column_config.NumberColumn("Failures", format="%d", width="small"),
+            "Avg Cost ($)": st.column_config.TextColumn("Avg Cost ($)", width="small"),
+            "Avg Tokens": st.column_config.NumberColumn("Avg Tokens", format="%d"),
+        },
+    )
+    st.caption(
+        f"{len(rows)} model(s)  \u2022  {total_delegations} total delegations  "
+        f"\u2022  {total_failures} total failures"
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
