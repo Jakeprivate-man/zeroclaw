@@ -36,8 +36,6 @@ _PLOTLY_LAYOUT = dict(
 def _collect_all_nodes(parser: DelegationParser, run_id: Optional[str] = None) -> List[DelegationNode]:
     """Return a flat list of all delegation nodes, optionally filtered by run."""
     roots = parser.parse_delegation_tree(run_id)
-    if not roots:
-        roots = parser.get_mock_tree()
     nodes: List[DelegationNode] = []
 
     def _walk(node: DelegationNode) -> None:
@@ -57,18 +55,16 @@ def render_cost_by_run() -> None:
     runs = parser.list_runs()
 
     if not runs:
-        st.caption("No run data available — showing mock example")
-        # Synthetic example so the chart is never blank
-        labels = ["run-aaa1 (mock)", "run-bbb2 (mock)", "run-ccc3 (mock)"]
-        values = [0.0042, 0.0115, 0.0031]
-    else:
-        labels = []
-        values = []
-        for run in reversed(runs):  # oldest → newest left-to-right
-            nodes = _collect_all_nodes(parser, run.run_id)
-            total_cost = sum(n.cost_usd for n in nodes if n.cost_usd is not None)
-            labels.append(run.label[:30] + "…" if len(run.label) > 30 else run.label)
-            values.append(round(total_cost, 6))
+        st.caption("No data available.")
+        return
+
+    labels = []
+    values = []
+    for run in reversed(runs):  # oldest → newest left-to-right
+        nodes = _collect_all_nodes(parser, run.run_id)
+        total_cost = sum(n.cost_usd for n in nodes if n.cost_usd is not None)
+        labels.append(run.label[:30] + "…" if len(run.label) > 30 else run.label)
+        values.append(round(total_cost, 6))
 
     fig = go.Figure(
         go.Bar(
@@ -100,11 +96,8 @@ def render_tokens_by_model() -> None:
             model_tokens[node.model] = model_tokens.get(node.model, 0) + node.tokens_used
 
     if not model_tokens:
-        st.caption("No token data available — showing mock example")
-        model_tokens = {
-            "claude-sonnet-4": 6200,
-            "claude-haiku-4": 1400,
-        }
+        st.caption("No data available.")
+        return
 
     sorted_models = sorted(model_tokens.items(), key=lambda x: x[1])
     models = [m for m, _ in sorted_models]
@@ -136,12 +129,12 @@ def render_depth_distribution() -> None:
     completed = [n for n in nodes if n.is_complete]
 
     if not completed:
-        st.caption("No delegation data available — showing mock example")
-        depth_counts = {0: 1, 1: 2, 2: 2}
-    else:
-        depth_counts: dict = {}
-        for node in completed:
-            depth_counts[node.depth] = depth_counts.get(node.depth, 0) + 1
+        st.caption("No data available.")
+        return
+
+    depth_counts: dict = {}
+    for node in completed:
+        depth_counts[node.depth] = depth_counts.get(node.depth, 0) + 1
 
     depths = sorted(depth_counts.keys())
     counts = [depth_counts[d] for d in depths]
@@ -173,23 +166,21 @@ def render_success_rate_by_depth() -> None:
     completed = [n for n in nodes if n.is_complete]
 
     if not completed:
-        st.caption("No delegation data available — showing mock example")
-        depths = [0, 1, 2]
-        successes = [1, 2, 1]
-        failures = [0, 0, 1]
-    else:
-        depth_success: dict = {}
-        depth_failure: dict = {}
-        for node in completed:
-            d = node.depth
-            if node.success:
-                depth_success[d] = depth_success.get(d, 0) + 1
-            else:
-                depth_failure[d] = depth_failure.get(d, 0) + 1
-        all_depths = sorted(set(list(depth_success.keys()) + list(depth_failure.keys())))
-        depths = all_depths
-        successes = [depth_success.get(d, 0) for d in all_depths]
-        failures = [depth_failure.get(d, 0) for d in all_depths]
+        st.caption("No data available.")
+        return
+
+    depth_success: dict = {}
+    depth_failure: dict = {}
+    for node in completed:
+        d = node.depth
+        if node.success:
+            depth_success[d] = depth_success.get(d, 0) + 1
+        else:
+            depth_failure[d] = depth_failure.get(d, 0) + 1
+    all_depths = sorted(set(list(depth_success.keys()) + list(depth_failure.keys())))
+    depths = all_depths
+    successes = [depth_success.get(d, 0) for d in all_depths]
+    failures = [depth_failure.get(d, 0) for d in all_depths]
 
     depth_labels = [f"Depth {d}" for d in depths]
 
@@ -232,59 +223,43 @@ def render_timeline(run_id: Optional[str] = None) -> None:
     timed = [n for n in nodes if n.start_time is not None]
 
     if not timed:
-        st.caption("No timed delegation data available — showing mock example")
-        # Synthetic waterfall so the chart is never blank
-        now = datetime.now()
-        base_ms = now.timestamp() * 1000
-        mock_rows = [
-            ("main",              0, base_ms,        5234, True,  None),
-            ("  research",        1, base_ms + 100,  4512, True,  None),
-            ("    codebase_analyzer", 2, base_ms + 200, 1234, True,  None),
-            ("    doc_analyzer",  2, base_ms + 1500, 987,  True,  None),
-        ]
-        labels    = [r[0] for r in mock_rows]
-        starts_ms = [r[2] for r in mock_rows]
-        durs_ms   = [r[3] for r in mock_rows]
-        colors    = [_GREEN_PRIMARY] * len(mock_rows)
-        hover_txts = [
-            f"<b>{r[0].strip()}</b><br>Depth: {r[1]}<br>Duration: {r[3]}ms<br>Status: ✅ Success"
-            for r in mock_rows
-        ]
-    else:
-        timed_sorted = sorted(timed, key=lambda n: (n.start_time, n.depth))
-        labels, starts_ms, durs_ms, colors, hover_txts = [], [], [], [], []
+        st.caption("No timed delegation data available.")
+        return
 
-        for node in timed_sorted:
-            indent = "\u00a0\u00a0" * node.depth   # non-breaking spaces for y-axis indent
-            labels.append(f"{indent}{node.agent_name} (d{node.depth})")
-            starts_ms.append(node.start_time.timestamp() * 1000)
+    timed_sorted = sorted(timed, key=lambda n: (n.start_time, n.depth))
+    labels, starts_ms, durs_ms, colors, hover_txts = [], [], [], [], []
 
-            if node.duration_ms is not None:
-                dur = node.duration_ms
-            elif node.end_time:
-                dur = int((node.end_time - node.start_time).total_seconds() * 1000)
-            else:
-                dur = int((datetime.now() - node.start_time).total_seconds() * 1000)
-            durs_ms.append(max(dur, 10))  # at least 10ms so the bar is always visible
+    for node in timed_sorted:
+        indent = "\u00a0\u00a0" * node.depth   # non-breaking spaces for y-axis indent
+        labels.append(f"{indent}{node.agent_name} (d{node.depth})")
+        starts_ms.append(node.start_time.timestamp() * 1000)
 
-            if not node.is_complete:
-                colors.append(_YELLOW)
-            elif node.success:
-                colors.append(_GREEN_PRIMARY)
-            else:
-                colors.append(_RED)
+        if node.duration_ms is not None:
+            dur = node.duration_ms
+        elif node.end_time:
+            dur = int((node.end_time - node.start_time).total_seconds() * 1000)
+        else:
+            dur = int((datetime.now() - node.start_time).total_seconds() * 1000)
+        durs_ms.append(max(dur, 10))  # at least 10ms so the bar is always visible
 
-            dur_str = f"{dur}ms" if dur < 1000 else f"{dur / 1000:.2f}s"
-            tok_str = f"{node.tokens_used:,}" if node.tokens_used is not None else "—"
-            cost_str = f"${node.cost_usd:.4f}" if node.cost_usd is not None else "—"
-            hover_txts.append(
-                f"<b>{node.agent_name}</b><br>"
-                f"Depth: {node.depth}<br>"
-                f"Duration: {dur_str}<br>"
-                f"Tokens: {tok_str}<br>"
-                f"Cost: {cost_str}<br>"
-                f"Status: {node.status}"
-            )
+        if not node.is_complete:
+            colors.append(_YELLOW)
+        elif node.success:
+            colors.append(_GREEN_PRIMARY)
+        else:
+            colors.append(_RED)
+
+        dur_str = f"{dur}ms" if dur < 1000 else f"{dur / 1000:.2f}s"
+        tok_str = f"{node.tokens_used:,}" if node.tokens_used is not None else "—"
+        cost_str = f"${node.cost_usd:.4f}" if node.cost_usd is not None else "—"
+        hover_txts.append(
+            f"<b>{node.agent_name}</b><br>"
+            f"Depth: {node.depth}<br>"
+            f"Duration: {dur_str}<br>"
+            f"Tokens: {tok_str}<br>"
+            f"Cost: {cost_str}<br>"
+            f"Status: {node.status}"
+        )
 
     row_height_px = 32
     chart_height = max(180, len(labels) * row_height_px + 80)
@@ -508,7 +483,7 @@ def render_agent_stats_table(run_id: Optional[str] = None) -> None:
     Columns: Agent | Delegations | Ended | Success % | Avg Duration |
              Total Tokens | Total Cost ($)
 
-    Falls back to a synthetic mock example when no log data is present.
+    Shows an empty state when no log data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -525,66 +500,58 @@ def render_agent_stats_table(run_id: Optional[str] = None) -> None:
     nodes = _collect_all_nodes(parser, run_id)
 
     if not nodes:
-        st.caption("No delegation data available — showing mock example")
-        rows = [
-            {"Agent": "main", "Delegations": 3, "Ended": 3, "Success %": 100.0,
-             "Avg Duration": "2.50s", "Total Tokens": 3450, "Total Cost ($)": 0.0120},
-            {"Agent": "research", "Delegations": 2, "Ended": 2, "Success %": 80.0,
-             "Avg Duration": "1.23s", "Total Tokens": 2100, "Total Cost ($)": 0.0074},
-            {"Agent": "sub", "Delegations": 1, "Ended": 1, "Success %": 100.0,
-             "Avg Duration": "0.50s", "Total Tokens": 890, "Total Cost ($)": 0.0031},
-        ]
-        df = pd.DataFrame(rows)
-    else:
-        agg: dict = {}
-        for node in nodes:
-            name = node.agent_name
-            if name not in agg:
-                agg[name] = {
-                    "delegation_count": 0,
-                    "end_count": 0,
-                    "success_count": 0,
-                    "total_dur_ms": 0,
-                    "total_tokens": 0,
-                    "total_cost": 0.0,
-                }
-            s = agg[name]
-            s["delegation_count"] += 1
-            if node.is_complete:
-                s["end_count"] += 1
-                if node.success:
-                    s["success_count"] += 1
-                if node.duration_ms is not None:
-                    s["total_dur_ms"] += node.duration_ms
-            if node.tokens_used is not None:
-                s["total_tokens"] += node.tokens_used
-            if node.cost_usd is not None:
-                s["total_cost"] += node.cost_usd
+        st.caption("No data available.")
+        return
 
-        rows = []
-        for name, s in agg.items():
-            success_pct = (
-                round(100.0 * s["success_count"] / s["end_count"], 1)
-                if s["end_count"] > 0
-                else None
-            )
-            avg_dur = (
-                _fmt_ms(s["total_dur_ms"] // s["end_count"])
-                if s["end_count"] > 0
-                else "—"
-            )
-            rows.append({
-                "Agent": name,
-                "Delegations": s["delegation_count"],
-                "Ended": s["end_count"],
-                "Success %": success_pct,
-                "Avg Duration": avg_dur,
-                "Total Tokens": s["total_tokens"] if s["total_tokens"] > 0 else None,
-                "Total Cost ($)": s["total_cost"] if s["total_cost"] > 0.0 else None,
-            })
+    agg: dict = {}
+    for node in nodes:
+        name = node.agent_name
+        if name not in agg:
+            agg[name] = {
+                "delegation_count": 0,
+                "end_count": 0,
+                "success_count": 0,
+                "total_dur_ms": 0,
+                "total_tokens": 0,
+                "total_cost": 0.0,
+            }
+        s = agg[name]
+        s["delegation_count"] += 1
+        if node.is_complete:
+            s["end_count"] += 1
+            if node.success:
+                s["success_count"] += 1
+            if node.duration_ms is not None:
+                s["total_dur_ms"] += node.duration_ms
+        if node.tokens_used is not None:
+            s["total_tokens"] += node.tokens_used
+        if node.cost_usd is not None:
+            s["total_cost"] += node.cost_usd
 
-        rows.sort(key=lambda r: r["Total Tokens"] or 0, reverse=True)
-        df = pd.DataFrame(rows)
+    rows = []
+    for name, s in agg.items():
+        success_pct = (
+            round(100.0 * s["success_count"] / s["end_count"], 1)
+            if s["end_count"] > 0
+            else None
+        )
+        avg_dur = (
+            _fmt_ms(s["total_dur_ms"] // s["end_count"])
+            if s["end_count"] > 0
+            else "—"
+        )
+        rows.append({
+            "Agent": name,
+            "Delegations": s["delegation_count"],
+            "Ended": s["end_count"],
+            "Success %": success_pct,
+            "Avg Duration": avg_dur,
+            "Total Tokens": s["total_tokens"] if s["total_tokens"] > 0 else None,
+            "Total Cost ($)": s["total_cost"] if s["total_cost"] > 0.0 else None,
+        })
+
+    rows.sort(key=lambda r: r["Total Tokens"] or 0, reverse=True)
+    df = pd.DataFrame(rows)
 
     st.dataframe(
         df,
@@ -611,7 +578,7 @@ def render_model_stats_table(run_id: Optional[str] = None) -> None:
 
     Columns: Model | Delegations | Ended | Success % | Total Tokens | Total Cost ($)
 
-    Falls back to a synthetic mock example when no log data is present.
+    Shows an empty state when no log data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -625,56 +592,50 @@ def render_model_stats_table(run_id: Optional[str] = None) -> None:
     nodes = _collect_all_nodes(parser, run_id)
 
     if not nodes:
-        st.caption("No delegation data available — showing mock example")
-        rows = [
-            {"Model": "claude-sonnet-4", "Delegations": 4, "Ended": 4,
-             "Success %": 100.0, "Total Tokens": 5200, "Total Cost ($)": 0.0184},
-            {"Model": "claude-haiku-4", "Delegations": 2, "Ended": 2,
-             "Success %": 100.0, "Total Tokens": 1240, "Total Cost ($)": 0.0022},
-        ]
-        df = pd.DataFrame(rows)
-    else:
-        agg: dict = {}
-        for node in nodes:
-            model = node.model or "?"
-            if model not in agg:
-                agg[model] = {
-                    "delegation_count": 0,
-                    "end_count": 0,
-                    "success_count": 0,
-                    "total_tokens": 0,
-                    "total_cost": 0.0,
-                }
-            s = agg[model]
-            s["delegation_count"] += 1
-            if node.is_complete:
-                s["end_count"] += 1
-                if node.success:
-                    s["success_count"] += 1
-            if node.tokens_used is not None:
-                s["total_tokens"] += node.tokens_used
-            if node.cost_usd is not None:
-                s["total_cost"] += node.cost_usd
+        st.caption("No data available.")
+        return
 
-        rows = []
-        for model, s in agg.items():
-            success_pct = (
-                round(100.0 * s["success_count"] / s["end_count"], 1)
-                if s["end_count"] > 0
-                else None
-            )
-            rows.append({
-                "Model": model,
-                "Delegations": s["delegation_count"],
-                "Ended": s["end_count"],
-                "Success %": success_pct,
-                "Total Tokens": s["total_tokens"],
-                "Total Cost ($)": round(s["total_cost"], 6),
-            })
+    agg: dict = {}
+    for node in nodes:
+        model = node.model or "?"
+        if model not in agg:
+            agg[model] = {
+                "delegation_count": 0,
+                "end_count": 0,
+                "success_count": 0,
+                "total_tokens": 0,
+                "total_cost": 0.0,
+            }
+        s = agg[model]
+        s["delegation_count"] += 1
+        if node.is_complete:
+            s["end_count"] += 1
+            if node.success:
+                s["success_count"] += 1
+        if node.tokens_used is not None:
+            s["total_tokens"] += node.tokens_used
+        if node.cost_usd is not None:
+            s["total_cost"] += node.cost_usd
 
-        # Sort by Total Tokens descending
-        rows.sort(key=lambda r: r["Total Tokens"], reverse=True)
-        df = pd.DataFrame(rows)
+    rows = []
+    for model, s in agg.items():
+        success_pct = (
+            round(100.0 * s["success_count"] / s["end_count"], 1)
+            if s["end_count"] > 0
+            else None
+        )
+        rows.append({
+            "Model": model,
+            "Delegations": s["delegation_count"],
+            "Ended": s["end_count"],
+            "Success %": success_pct,
+            "Total Tokens": s["total_tokens"],
+            "Total Cost ($)": round(s["total_cost"], 6),
+        })
+
+    # Sort by Total Tokens descending
+    rows.sort(key=lambda r: r["Total Tokens"], reverse=True)
+    df = pd.DataFrame(rows)
 
     st.dataframe(
         df,
@@ -700,7 +661,7 @@ def render_providers_stats_table(run_id: Optional[str] = None) -> None:
 
     Columns: Provider | Delegations | Ended | Success % | Total Tokens | Total Cost ($)
 
-    Falls back to a synthetic mock example when no log data is present.
+    Shows an empty state when no log data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -714,56 +675,50 @@ def render_providers_stats_table(run_id: Optional[str] = None) -> None:
     nodes = _collect_all_nodes(parser, run_id)
 
     if not nodes:
-        st.caption("No delegation data available — showing mock example")
-        rows = [
-            {"Provider": "anthropic", "Delegations": 6, "Ended": 6,
-             "Success %": 100.0, "Total Tokens": 6440, "Total Cost ($)": 0.0206},
-            {"Provider": "openai", "Delegations": 1, "Ended": 1,
-             "Success %": 100.0, "Total Tokens": 820, "Total Cost ($)": 0.0031},
-        ]
-        df = pd.DataFrame(rows)
-    else:
-        agg: dict = {}
-        for node in nodes:
-            provider = node.provider or "?"
-            if provider not in agg:
-                agg[provider] = {
-                    "delegation_count": 0,
-                    "end_count": 0,
-                    "success_count": 0,
-                    "total_tokens": 0,
-                    "total_cost": 0.0,
-                }
-            s = agg[provider]
-            s["delegation_count"] += 1
-            if node.is_complete:
-                s["end_count"] += 1
-                if node.success:
-                    s["success_count"] += 1
-            if node.tokens_used is not None:
-                s["total_tokens"] += node.tokens_used
-            if node.cost_usd is not None:
-                s["total_cost"] += node.cost_usd
+        st.caption("No data available.")
+        return
 
-        rows = []
-        for provider, s in agg.items():
-            success_pct = (
-                round(100.0 * s["success_count"] / s["end_count"], 1)
-                if s["end_count"] > 0
-                else None
-            )
-            rows.append({
-                "Provider": provider,
-                "Delegations": s["delegation_count"],
-                "Ended": s["end_count"],
-                "Success %": success_pct,
-                "Total Tokens": s["total_tokens"],
-                "Total Cost ($)": round(s["total_cost"], 6),
-            })
+    agg: dict = {}
+    for node in nodes:
+        provider = node.provider or "?"
+        if provider not in agg:
+            agg[provider] = {
+                "delegation_count": 0,
+                "end_count": 0,
+                "success_count": 0,
+                "total_tokens": 0,
+                "total_cost": 0.0,
+            }
+        s = agg[provider]
+        s["delegation_count"] += 1
+        if node.is_complete:
+            s["end_count"] += 1
+            if node.success:
+                s["success_count"] += 1
+        if node.tokens_used is not None:
+            s["total_tokens"] += node.tokens_used
+        if node.cost_usd is not None:
+            s["total_cost"] += node.cost_usd
 
-        # Sort by Total Tokens descending
-        rows.sort(key=lambda r: r["Total Tokens"], reverse=True)
-        df = pd.DataFrame(rows)
+    rows = []
+    for provider, s in agg.items():
+        success_pct = (
+            round(100.0 * s["success_count"] / s["end_count"], 1)
+            if s["end_count"] > 0
+            else None
+        )
+        rows.append({
+            "Provider": provider,
+            "Delegations": s["delegation_count"],
+            "Ended": s["end_count"],
+            "Success %": success_pct,
+            "Total Tokens": s["total_tokens"],
+            "Total Cost ($)": round(s["total_cost"], 6),
+        })
+
+    # Sort by Total Tokens descending
+    rows.sort(key=lambda r: r["Total Tokens"], reverse=True)
+    df = pd.DataFrame(rows)
 
     st.dataframe(
         df,
@@ -789,7 +744,7 @@ def render_depth_stats_table(run_id: Optional[str] = None) -> None:
 
     Columns: Depth | Delegations | Ended | Success % | Total Tokens | Total Cost ($)
 
-    Falls back to a synthetic mock example when no log data is present.
+    Shows an empty state when no log data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -803,58 +758,50 @@ def render_depth_stats_table(run_id: Optional[str] = None) -> None:
     nodes = _collect_all_nodes(parser, run_id)
 
     if not nodes:
-        st.caption("No delegation data available — showing mock example")
-        rows = [
-            {"Depth": 0, "Delegations": 1, "Ended": 1,
-             "Success %": 100.0, "Total Tokens": 3800, "Total Cost ($)": 0.0134},
-            {"Depth": 1, "Delegations": 3, "Ended": 3,
-             "Success %": 100.0, "Total Tokens": 2400, "Total Cost ($)": 0.0062},
-            {"Depth": 2, "Delegations": 2, "Ended": 2,
-             "Success %": 50.0, "Total Tokens": 1060, "Total Cost ($)": 0.0010},
-        ]
-        df = pd.DataFrame(rows)
-    else:
-        agg: dict = {}
-        for node in nodes:
-            d = node.depth
-            if d not in agg:
-                agg[d] = {
-                    "delegation_count": 0,
-                    "end_count": 0,
-                    "success_count": 0,
-                    "total_tokens": 0,
-                    "total_cost": 0.0,
-                }
-            s = agg[d]
-            s["delegation_count"] += 1
-            if node.is_complete:
-                s["end_count"] += 1
-                if node.success:
-                    s["success_count"] += 1
-            if node.tokens_used is not None:
-                s["total_tokens"] += node.tokens_used
-            if node.cost_usd is not None:
-                s["total_cost"] += node.cost_usd
+        st.caption("No data available.")
+        return
 
-        rows = []
-        for depth, s in agg.items():
-            success_pct = (
-                round(100.0 * s["success_count"] / s["end_count"], 1)
-                if s["end_count"] > 0
-                else None
-            )
-            rows.append({
-                "Depth": depth,
-                "Delegations": s["delegation_count"],
-                "Ended": s["end_count"],
-                "Success %": success_pct,
-                "Total Tokens": s["total_tokens"],
-                "Total Cost ($)": round(s["total_cost"], 6),
-            })
+    agg: dict = {}
+    for node in nodes:
+        d = node.depth
+        if d not in agg:
+            agg[d] = {
+                "delegation_count": 0,
+                "end_count": 0,
+                "success_count": 0,
+                "total_tokens": 0,
+                "total_cost": 0.0,
+            }
+        s = agg[d]
+        s["delegation_count"] += 1
+        if node.is_complete:
+            s["end_count"] += 1
+            if node.success:
+                s["success_count"] += 1
+        if node.tokens_used is not None:
+            s["total_tokens"] += node.tokens_used
+        if node.cost_usd is not None:
+            s["total_cost"] += node.cost_usd
 
-        # Sort by Depth ascending (root first)
-        rows.sort(key=lambda r: r["Depth"])
-        df = pd.DataFrame(rows)
+    rows = []
+    for depth, s in agg.items():
+        success_pct = (
+            round(100.0 * s["success_count"] / s["end_count"], 1)
+            if s["end_count"] > 0
+            else None
+        )
+        rows.append({
+            "Depth": depth,
+            "Delegations": s["delegation_count"],
+            "Ended": s["end_count"],
+            "Success %": success_pct,
+            "Total Tokens": s["total_tokens"],
+            "Total Cost ($)": round(s["total_cost"], 6),
+        })
+
+    # Sort by Depth ascending (root first)
+    rows.sort(key=lambda r: r["Depth"])
+    df = pd.DataFrame(rows)
 
     st.dataframe(
         df,
@@ -882,7 +829,7 @@ def render_errors_table(run_id: Optional[str] = None) -> None:
 
     Columns: # | Run | Agent | Depth | Duration | Error Message
 
-    Falls back to a synthetic mock example when no failures are found.
+    Shows an empty state when no failures are found.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -897,50 +844,32 @@ def render_errors_table(run_id: Optional[str] = None) -> None:
     failed = [n for n in nodes if n.is_complete and not n.success]
 
     if not failed:
-        st.caption("No failed delegations — showing mock example")
-        rows = [
-            {
-                "#": 1,
-                "Run": "abc12345",
-                "Agent": "research",
-                "Depth": 1,
-                "Duration": "3.21s",
-                "Error Message": "Tool call timed out after 30 s — no response from provider",
-            },
-            {
-                "#": 2,
-                "Run": "abc12345",
-                "Agent": "codebase_analyzer",
-                "Depth": 2,
-                "Duration": "0.89s",
-                "Error Message": "Rate limit exceeded: retry after 60 s",
-            },
-        ]
-        df = pd.DataFrame(rows)
-    else:
-        def _fmt_ms(ms: Optional[int]) -> str:
-            if ms is None:
-                return "—"
-            return f"{ms}ms" if ms < 1000 else f"{ms / 1000:.2f}s"
+        st.caption("No data available.")
+        return
 
-        # Sort oldest failure first (mirrors CLI ascending timestamp order)
-        failed_sorted = sorted(
-            failed,
-            key=lambda n: n.start_time if n.start_time is not None else datetime.min,
-        )
+    def _fmt_ms(ms: Optional[int]) -> str:
+        if ms is None:
+            return "—"
+        return f"{ms}ms" if ms < 1000 else f"{ms / 1000:.2f}s"
 
-        rows = []
-        for i, node in enumerate(failed_sorted, start=1):
-            run_prefix = (node.run_id or "")[:8]
-            rows.append({
-                "#": i,
-                "Run": run_prefix,
-                "Agent": node.agent_name,
-                "Depth": node.depth,
-                "Duration": _fmt_ms(node.duration_ms),
-                "Error Message": node.error_message or "—",
-            })
-        df = pd.DataFrame(rows)
+    # Sort oldest failure first (mirrors CLI ascending timestamp order)
+    failed_sorted = sorted(
+        failed,
+        key=lambda n: n.start_time if n.start_time is not None else datetime.min,
+    )
+
+    rows = []
+    for i, node in enumerate(failed_sorted, start=1):
+        run_prefix = (node.run_id or "")[:8]
+        rows.append({
+            "#": i,
+            "Run": run_prefix,
+            "Agent": node.agent_name,
+            "Depth": node.depth,
+            "Duration": _fmt_ms(node.duration_ms),
+            "Error Message": node.error_message or "—",
+        })
+    df = pd.DataFrame(rows)
 
     st.dataframe(
         df,
@@ -968,7 +897,7 @@ def render_slow_table(run_id: Optional[str] = None) -> None:
 
     Columns: # | Run | Agent | Depth | Duration (ms) | Tokens | Cost ($)
 
-    Falls back to a synthetic mock example when no real data is present.
+    Shows an empty state when no real data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -993,44 +922,24 @@ def render_slow_table(run_id: Optional[str] = None) -> None:
     timed = [n for n in nodes if n.is_complete and n.duration_ms is not None]
 
     if not timed:
-        st.caption("No timed delegation data — showing mock example")
-        rows = [
-            {
-                "#": 1,
-                "Run": "abc12345",
-                "Agent": "main",
-                "Depth": 0,
-                "Duration (ms)": 5234,
-                "Tokens": 3800,
-                "Cost ($)": 0.0134,
-            },
-            {
-                "#": 2,
-                "Run": "abc12345",
-                "Agent": "research",
-                "Depth": 1,
-                "Duration (ms)": 3210,
-                "Tokens": 2400,
-                "Cost ($)": 0.0062,
-            },
-        ]
-        df = pd.DataFrame(rows[:limit])
-    else:
-        timed_sorted = sorted(timed, key=lambda n: n.duration_ms, reverse=True)  # type: ignore[arg-type]
+        st.caption("No data available.")
+        return
 
-        rows = []
-        for i, node in enumerate(timed_sorted[:limit], start=1):
-            run_prefix = (node.run_id or "")[:8]
-            rows.append({
-                "#": i,
-                "Run": run_prefix,
-                "Agent": node.agent_name,
-                "Depth": node.depth,
-                "Duration (ms)": node.duration_ms,
-                "Tokens": node.tokens_used,
-                "Cost ($)": round(node.cost_usd, 6) if node.cost_usd is not None else None,
-            })
-        df = pd.DataFrame(rows)
+    timed_sorted = sorted(timed, key=lambda n: n.duration_ms, reverse=True)  # type: ignore[arg-type]
+
+    rows = []
+    for i, node in enumerate(timed_sorted[:limit], start=1):
+        run_prefix = (node.run_id or "")[:8]
+        rows.append({
+            "#": i,
+            "Run": run_prefix,
+            "Agent": node.agent_name,
+            "Depth": node.depth,
+            "Duration (ms)": node.duration_ms,
+            "Tokens": node.tokens_used,
+            "Cost ($)": round(node.cost_usd, 6) if node.cost_usd is not None else None,
+        })
+    df = pd.DataFrame(rows)
 
     st.dataframe(
         df,
@@ -1061,7 +970,7 @@ def render_cost_breakdown_table(run_id: Optional[str] = None) -> None:
     divided by the number of ``DelegationEnd`` events); shown as ``None``
     when no ends are recorded.
 
-    Falls back to a synthetic mock example when no log data is present.
+    Shows an empty state when no log data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -1075,92 +984,72 @@ def render_cost_breakdown_table(run_id: Optional[str] = None) -> None:
     events = parser._read_events(run_id)
 
     if not events:
-        st.caption("No delegation data available — showing mock example")
-        rows = [
-            {
-                "#": 1,
-                "Run": "abc12345",
-                "Start": "2026-01-02 11:00:00",
-                "Delegations": 7,
-                "Tokens": 7260,
-                "Cost ($)": 0.0237,
-                "Avg/Del ($)": 0.0034,
-            },
-            {
-                "#": 2,
-                "Run": "def67890",
-                "Start": "2026-01-01 09:30:00",
-                "Delegations": 3,
-                "Tokens": 2100,
-                "Cost ($)": 0.0074,
-                "Avg/Del ($)": 0.0025,
-            },
-        ]
-        df = pd.DataFrame(rows)
-    else:
-        # Aggregate per run_id from raw events.
-        agg: dict = {}
-        for ev in events:
-            rid = ev.get("run_id")
-            if not rid:
-                continue
-            if rid not in agg:
-                agg[rid] = {
-                    "start_time": None,
-                    "delegation_count": 0,
-                    "end_count": 0,
-                    "total_tokens": 0,
-                    "total_cost": 0.0,
-                }
-            s = agg[rid]
-            ts_str = ev.get("timestamp")
-            if ts_str:
-                try:
-                    from datetime import timezone
-                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                    if s["start_time"] is None or ts < s["start_time"]:
-                        s["start_time"] = ts
-                except ValueError:
-                    pass
-            etype = ev.get("event_type")
-            if etype == "DelegationStart":
-                s["delegation_count"] += 1
-            elif etype == "DelegationEnd":
-                s["end_count"] += 1
-                tok = ev.get("tokens_used")
-                if tok is not None:
-                    s["total_tokens"] += int(tok)
-                cost = ev.get("cost_usd")
-                if cost is not None:
-                    s["total_cost"] += float(cost)
+        st.caption("No data available.")
+        return
 
-        # Sort by total cost descending.
-        sorted_runs = sorted(
-            agg.items(), key=lambda kv: kv[1]["total_cost"], reverse=True
+    # Aggregate per run_id from raw events.
+    agg: dict = {}
+    for ev in events:
+        rid = ev.get("run_id")
+        if not rid:
+            continue
+        if rid not in agg:
+            agg[rid] = {
+                "start_time": None,
+                "delegation_count": 0,
+                "end_count": 0,
+                "total_tokens": 0,
+                "total_cost": 0.0,
+            }
+        s = agg[rid]
+        ts_str = ev.get("timestamp")
+        if ts_str:
+            try:
+                from datetime import timezone
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                if s["start_time"] is None or ts < s["start_time"]:
+                    s["start_time"] = ts
+            except ValueError:
+                pass
+        etype = ev.get("event_type")
+        if etype == "DelegationStart":
+            s["delegation_count"] += 1
+        elif etype == "DelegationEnd":
+            s["end_count"] += 1
+            tok = ev.get("tokens_used")
+            if tok is not None:
+                s["total_tokens"] += int(tok)
+            cost = ev.get("cost_usd")
+            if cost is not None:
+                s["total_cost"] += float(cost)
+
+    # Sort by total cost descending.
+    sorted_runs = sorted(
+        agg.items(), key=lambda kv: kv[1]["total_cost"], reverse=True
+    )
+
+    rows = []
+    for i, (rid, s) in enumerate(sorted_runs, start=1):
+        start_str = (
+            s["start_time"].strftime("%Y-%m-%d %H:%M:%S")
+            if s["start_time"] is not None
+            else "unknown"
         )
-
-        rows = []
-        for i, (rid, s) in enumerate(sorted_runs, start=1):
-            start_str = (
-                s["start_time"].strftime("%Y-%m-%d %H:%M:%S")
-                if s["start_time"] is not None
-                else "unknown"
-            )
-            avg = (
-                round(s["total_cost"] / s["end_count"], 6)
-                if s["end_count"] > 0 and s["total_cost"] > 0.0
-                else None
-            )
-            rows.append({
-                "#": i,
-                "Run": rid[:8],
-                "Start": start_str,
-                "Delegations": s["delegation_count"],
-                "Tokens": s["total_tokens"] if s["total_tokens"] > 0 else None,
-                "Cost ($)": round(s["total_cost"], 6) if s["total_cost"] > 0.0 else None,
-                "Avg/Del ($)": avg,
-            })
-        df = pd.DataFrame(rows)
+        avg = (
+            round(s["total_cost"] / s["end_count"], 6)
+            if s["end_count"] > 0 and s["total_cost"] > 0.0
+            else None
+        )
+        rows.append({
+            "#": i,
+            "Run": rid[:8],
+            "Start": start_str,
+            "Delegations": s["delegation_count"],
+            "Tokens": s["total_tokens"] if s["total_tokens"] > 0 else None,
+            "Cost ($)": round(s["total_cost"], 6) if s["total_cost"] > 0.0 else None,
+            "Avg/Del ($)": avg,
+        })
+    df = pd.DataFrame(rows)
 
     st.dataframe(
         df,
@@ -1189,7 +1078,7 @@ def render_recent_table(run_id: Optional[str] = None) -> None:
 
     Columns: # | Run | Agent | Depth | Duration | Tokens | Cost ($) | Finished
 
-    Falls back to a synthetic mock example when no real data is present.
+    Shows an empty state when no real data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -1214,62 +1103,40 @@ def render_recent_table(run_id: Optional[str] = None) -> None:
     completed = [n for n in nodes if n.is_complete]
 
     if not completed:
-        st.caption("No completed delegation data — showing mock example")
-        rows = [
-            {
-                "#": 1,
-                "Run": "abc12345",
-                "Agent": "research",
-                "Depth": 1,
-                "Duration": "4.51s",
-                "Tokens": 2400,
-                "Cost ($)": 0.0072,
-                "Finished": "2026-02-22 10:30:50",
-            },
-            {
-                "#": 2,
-                "Run": "abc12345",
-                "Agent": "main",
-                "Depth": 0,
-                "Duration": "5.23s",
-                "Tokens": 3800,
-                "Cost ($)": 0.0114,
-                "Finished": "2026-02-22 10:30:45",
-            },
-        ]
-        df = pd.DataFrame(rows[:limit])
-    else:
-        def _fmt_ms(ms: Optional[int]) -> str:
-            if ms is None:
-                return "—"
-            return f"{ms}ms" if ms < 1000 else f"{ms / 1000:.2f}s"
+        st.caption("No data available.")
+        return
 
-        # Sort newest-finish first; fall back to start_time when end_time is absent.
-        completed_sorted = sorted(
-            completed,
-            key=lambda n: (n.end_time or n.start_time or datetime.min),
-            reverse=True,
+    def _fmt_ms(ms: Optional[int]) -> str:
+        if ms is None:
+            return "—"
+        return f"{ms}ms" if ms < 1000 else f"{ms / 1000:.2f}s"
+
+    # Sort newest-finish first; fall back to start_time when end_time is absent.
+    completed_sorted = sorted(
+        completed,
+        key=lambda n: (n.end_time or n.start_time or datetime.min),
+        reverse=True,
+    )
+
+    rows = []
+    for i, node in enumerate(completed_sorted[:limit], start=1):
+        run_prefix = (node.run_id or "")[:8]
+        finished_str = (
+            node.end_time.strftime("%Y-%m-%d %H:%M:%S")
+            if node.end_time is not None
+            else "—"
         )
-
-        rows = []
-        for i, node in enumerate(completed_sorted[:limit], start=1):
-            run_prefix = (node.run_id or "")[:8]
-            finished_str = (
-                node.end_time.strftime("%Y-%m-%d %H:%M:%S")
-                if node.end_time is not None
-                else "—"
-            )
-            rows.append({
-                "#": i,
-                "Run": run_prefix,
-                "Agent": node.agent_name,
-                "Depth": node.depth,
-                "Duration": _fmt_ms(node.duration_ms),
-                "Tokens": node.tokens_used,
-                "Cost ($)": round(node.cost_usd, 6) if node.cost_usd is not None else None,
-                "Finished": finished_str,
-            })
-        df = pd.DataFrame(rows)
+        rows.append({
+            "#": i,
+            "Run": run_prefix,
+            "Agent": node.agent_name,
+            "Depth": node.depth,
+            "Duration": _fmt_ms(node.duration_ms),
+            "Tokens": node.tokens_used,
+            "Cost ($)": round(node.cost_usd, 6) if node.cost_usd is not None else None,
+            "Finished": finished_str,
+        })
+    df = pd.DataFrame(rows)
 
     st.dataframe(
         df,
@@ -1300,7 +1167,7 @@ def render_active_table(run_id: Optional[str] = None) -> None:
 
     Columns: # | Run | Agent | Depth | Started | Elapsed
 
-    Falls back to a synthetic mock example when no real data is present.
+    Shows an empty state when no real data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -1315,77 +1182,67 @@ def render_active_table(run_id: Optional[str] = None) -> None:
     events = parser._read_events(run_id)
 
     if not events:
-        st.caption("No delegation data available — showing mock example")
-        rows = [
-            {
-                "#": 1,
-                "Run": "abc12345",
-                "Agent": "research",
-                "Depth": 1,
-                "Started": "2026-02-22 10:30:00",
-                "Elapsed": "12s",
-            },
-        ]
-        df = pd.DataFrame(rows)
-    else:
-        # FIFO match starts to ends per (run_id, agent_name, depth) key.
-        start_queues: dict = defaultdict(list)
-        end_counts: dict = defaultdict(int)
+        st.caption("No data available.")
+        return
 
-        for ev in events:
-            etype = ev.get("event_type", "")
-            rid = ev.get("run_id", "")
-            agent = ev.get("agent_name", "")
-            depth = int(ev.get("depth", 0))
-            key = (rid, agent, depth)
-            if etype == "DelegationStart":
-                start_queues[key].append(ev)
-            elif etype == "DelegationEnd":
-                end_counts[key] += 1
+    # FIFO match starts to ends per (run_id, agent_name, depth) key.
+    start_queues: dict = defaultdict(list)
+    end_counts: dict = defaultdict(int)
 
-        active: list = []
-        for key, starts in start_queues.items():
-            matched = end_counts.get(key, 0)
-            for start in starts[matched:]:
-                active.append(start)
+    for ev in events:
+        etype = ev.get("event_type", "")
+        rid = ev.get("run_id", "")
+        agent = ev.get("agent_name", "")
+        depth = int(ev.get("depth", 0))
+        key = (rid, agent, depth)
+        if etype == "DelegationStart":
+            start_queues[key].append(ev)
+        elif etype == "DelegationEnd":
+            end_counts[key] += 1
 
-        # Sort oldest-start first.
-        active.sort(key=lambda e: e.get("timestamp", ""))
+    active: list = []
+    for key, starts in start_queues.items():
+        matched = end_counts.get(key, 0)
+        for start in starts[matched:]:
+            active.append(start)
 
-        if not active:
-            st.caption("No active (in-flight) delegations found.")
-            return
+    # Sort oldest-start first.
+    active.sort(key=lambda e: e.get("timestamp", ""))
 
-        now = datetime.utcnow()
-        rows = []
-        for i, ev in enumerate(active, start=1):
-            run_prefix = (ev.get("run_id") or "")[:8]
-            ts_str = ev.get("timestamp", "")
-            started_str = "—"
-            elapsed_str = "—"
-            if ts_str:
-                try:
-                    started_dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                    started_str = started_dt.strftime("%Y-%m-%d %H:%M:%S")
-                    secs = int((now - started_dt.replace(tzinfo=None)).total_seconds())
-                    secs = max(0, secs)
-                    if secs < 60:
-                        elapsed_str = f"{secs}s"
-                    elif secs < 3600:
-                        elapsed_str = f"{secs // 60}m{secs % 60}s"
-                    else:
-                        elapsed_str = f"{secs // 3600}h{(secs % 3600) // 60}m"
-                except ValueError:
-                    pass
-            rows.append({
-                "#": i,
-                "Run": run_prefix,
-                "Agent": ev.get("agent_name", "?"),
-                "Depth": int(ev.get("depth", 0)),
-                "Started": started_str,
-                "Elapsed": elapsed_str,
-            })
-        df = pd.DataFrame(rows)
+    if not active:
+        st.caption("No active (in-flight) delegations found.")
+        return
+
+    now = datetime.utcnow()
+    rows = []
+    for i, ev in enumerate(active, start=1):
+        run_prefix = (ev.get("run_id") or "")[:8]
+        ts_str = ev.get("timestamp", "")
+        started_str = "—"
+        elapsed_str = "—"
+        if ts_str:
+            try:
+                started_dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                started_str = started_dt.strftime("%Y-%m-%d %H:%M:%S")
+                secs = int((now - started_dt.replace(tzinfo=None)).total_seconds())
+                secs = max(0, secs)
+                if secs < 60:
+                    elapsed_str = f"{secs}s"
+                elif secs < 3600:
+                    elapsed_str = f"{secs // 60}m{secs % 60}s"
+                else:
+                    elapsed_str = f"{secs // 3600}h{(secs % 3600) // 60}m"
+            except ValueError:
+                pass
+        rows.append({
+            "#": i,
+            "Run": run_prefix,
+            "Agent": ev.get("agent_name", "?"),
+            "Depth": int(ev.get("depth", 0)),
+            "Started": started_str,
+            "Elapsed": elapsed_str,
+        })
+    df = pd.DataFrame(rows)
 
     st.dataframe(
         df,
@@ -1415,7 +1272,7 @@ def render_agent_history_table(run_id: Optional[str] = None) -> None:
     A caption below the table summarises total occurrences, successes,
     cumulative tokens, and cumulative cost — mirroring the CLI footer line.
 
-    Falls back to a synthetic mock example when no real data is present.
+    Shows an empty state when no real data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -1441,46 +1298,7 @@ def render_agent_history_table(run_id: Optional[str] = None) -> None:
     events = parser._read_events(run_id)
 
     if not events:
-        st.caption(f"No delegation data available — showing mock example for {agent_name!r}")
-        rows = [
-            {
-                "#": 1,
-                "Run": "abc12345",
-                "Depth": 1,
-                "Duration": "4512ms",
-                "Tokens": 1234,
-                "Cost ($)": "$0.0037",
-                "Ok": "yes",
-                "Finished": "2026-02-22 10:30:50",
-            },
-            {
-                "#": 2,
-                "Run": "abc12345",
-                "Depth": 2,
-                "Duration": "2100ms",
-                "Tokens": 654,
-                "Cost ($)": "$0.0019",
-                "Ok": "yes",
-                "Finished": "2026-02-22 10:30:45",
-            },
-        ]
-        df = pd.DataFrame(rows)
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "#": st.column_config.NumberColumn("#", format="%d", width="small"),
-                "Run": st.column_config.TextColumn("Run", width="small"),
-                "Depth": st.column_config.NumberColumn("Depth", format="%d", width="small"),
-                "Duration": st.column_config.TextColumn("Duration", width="small"),
-                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
-                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
-                "Ok": st.column_config.TextColumn("Ok", width="small"),
-                "Finished": st.column_config.TextColumn("Finished"),
-            },
-        )
-        st.caption("2 occurrence(s) — 2 succeeded • 1888 total tokens • $0.0056 total cost (mock)")
+        st.caption(f"No delegation data available for {agent_name!r}.")
         return
 
     # Filter completed delegations for the named agent.
@@ -1572,7 +1390,7 @@ def render_model_history_table(run_id: Optional[str] = None) -> None:
     A caption below the table summarises total occurrences, successes,
     cumulative tokens, and cumulative cost — mirroring the CLI footer line.
 
-    Falls back to a synthetic mock example when no real data is present.
+    Shows an empty state when no real data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -1598,49 +1416,7 @@ def render_model_history_table(run_id: Optional[str] = None) -> None:
     events = parser._read_events(run_id)
 
     if not events:
-        st.caption(f"No delegation data available — showing mock example for {model_name!r}")
-        rows = [
-            {
-                "#": 1,
-                "Run": "abc12345",
-                "Agent": "research",
-                "Depth": 1,
-                "Duration": "4512ms",
-                "Tokens": 1234,
-                "Cost ($)": "$0.0037",
-                "Ok": "yes",
-                "Finished": "2026-02-22 10:30:50",
-            },
-            {
-                "#": 2,
-                "Run": "abc12345",
-                "Agent": "main",
-                "Depth": 0,
-                "Duration": "2100ms",
-                "Tokens": 654,
-                "Cost ($)": "$0.0019",
-                "Ok": "yes",
-                "Finished": "2026-02-22 10:30:45",
-            },
-        ]
-        df = pd.DataFrame(rows)
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "#": st.column_config.NumberColumn("#", format="%d", width="small"),
-                "Run": st.column_config.TextColumn("Run", width="small"),
-                "Agent": st.column_config.TextColumn("Agent", width="medium"),
-                "Depth": st.column_config.NumberColumn("Depth", format="%d", width="small"),
-                "Duration": st.column_config.TextColumn("Duration", width="small"),
-                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
-                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
-                "Ok": st.column_config.TextColumn("Ok", width="small"),
-                "Finished": st.column_config.TextColumn("Finished"),
-            },
-        )
-        st.caption("2 occurrence(s) — 2 succeeded • 1888 total tokens • $0.0056 total cost (mock)")
+        st.caption(f"No delegation data available for {model_name!r}.")
         return
 
     # Filter completed delegations for the named model.
@@ -1735,7 +1511,7 @@ def render_provider_history_table(run_id: Optional[str] = None) -> None:
     A caption below the table summarises total occurrences, successes,
     cumulative tokens, and cumulative cost — mirroring the CLI footer line.
 
-    Falls back to a synthetic mock example when no real data is present.
+    Shows an empty state when no real data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -1761,52 +1537,7 @@ def render_provider_history_table(run_id: Optional[str] = None) -> None:
     events = parser._read_events(run_id)
 
     if not events:
-        st.caption(f"No delegation data available — showing mock example for {provider_name!r}")
-        rows = [
-            {
-                "#": 1,
-                "Run": "abc12345",
-                "Agent": "research",
-                "Model": "claude-sonnet-4",
-                "Depth": 1,
-                "Duration": "4512ms",
-                "Tokens": 1234,
-                "Cost ($)": "$0.0037",
-                "Ok": "yes",
-                "Finished": "2026-02-22 10:30:50",
-            },
-            {
-                "#": 2,
-                "Run": "abc12345",
-                "Agent": "main",
-                "Model": "claude-sonnet-4",
-                "Depth": 0,
-                "Duration": "2100ms",
-                "Tokens": 654,
-                "Cost ($)": "$0.0019",
-                "Ok": "yes",
-                "Finished": "2026-02-22 10:30:45",
-            },
-        ]
-        df = pd.DataFrame(rows)
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "#": st.column_config.NumberColumn("#", format="%d", width="small"),
-                "Run": st.column_config.TextColumn("Run", width="small"),
-                "Agent": st.column_config.TextColumn("Agent", width="medium"),
-                "Model": st.column_config.TextColumn("Model", width="medium"),
-                "Depth": st.column_config.NumberColumn("Depth", format="%d", width="small"),
-                "Duration": st.column_config.TextColumn("Duration", width="small"),
-                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
-                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
-                "Ok": st.column_config.TextColumn("Ok", width="small"),
-                "Finished": st.column_config.TextColumn("Finished"),
-            },
-        )
-        st.caption("2 occurrence(s) — 2 succeeded • 1888 total tokens • $0.0056 total cost (mock)")
+        st.caption(f"No delegation data available for {provider_name!r}.")
         return
 
     # Filter completed delegations for the named provider.
@@ -1908,7 +1639,7 @@ def render_run_report_table(run_id: Optional[str] = None) -> None:
     A caption below the table summarises total completions, successes,
     cumulative tokens, and cumulative cost — mirroring the CLI footer line.
 
-    Falls back to a synthetic mock example when no real data is present.
+    Shows an empty state when no real data is present.
 
     Args:
         run_id: Run ID to report on. ``None`` shows a "select a run" prompt.
@@ -1928,56 +1659,7 @@ def render_run_report_table(run_id: Optional[str] = None) -> None:
     events = parser._read_events(run_id)
 
     if not events:
-        st.caption(f"No delegation data available — showing mock example for run {scope_label!r}")
-        rows = [
-            {
-                "#": 1,
-                "Agent": "research",
-                "Depth": 1,
-                "Duration": "3200ms",
-                "Tokens": 980,
-                "Cost ($)": "$0.0029",
-                "Ok": "yes",
-                "Finished": "2026-02-22 10:30:44",
-            },
-            {
-                "#": 2,
-                "Agent": "research",
-                "Depth": 1,
-                "Duration": "4512ms",
-                "Tokens": 1234,
-                "Cost ($)": "$0.0037",
-                "Ok": "yes",
-                "Finished": "2026-02-22 10:30:50",
-            },
-            {
-                "#": 3,
-                "Agent": "main",
-                "Depth": 0,
-                "Duration": "2100ms",
-                "Tokens": 654,
-                "Cost ($)": "$0.0019",
-                "Ok": "no",
-                "Finished": "2026-02-22 10:30:55",
-            },
-        ]
-        df = pd.DataFrame(rows)
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "#": st.column_config.NumberColumn("#", format="%d", width="small"),
-                "Agent": st.column_config.TextColumn("Agent", width="medium"),
-                "Depth": st.column_config.NumberColumn("Depth", format="%d", width="small"),
-                "Duration": st.column_config.TextColumn("Duration", width="small"),
-                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
-                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
-                "Ok": st.column_config.TextColumn("Ok", width="small"),
-                "Finished": st.column_config.TextColumn("Finished"),
-            },
-        )
-        st.caption("3 completed — 2 succeeded • 2868 total tokens • $0.0085 total cost (mock)")
+        st.caption(f"No delegation data available for run {scope_label!r}.")
         return
 
     # Filter completed delegations for this run.
@@ -2069,7 +1751,7 @@ def render_depth_view_table(run_id: Optional[str] = None) -> None:
     A caption below the table summarises total occurrences, successes,
     cumulative tokens, and cumulative cost — mirroring the CLI footer line.
 
-    Falls back to a synthetic mock example when no real data is present.
+    Shows an empty state when no real data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -2094,48 +1776,7 @@ def render_depth_view_table(run_id: Optional[str] = None) -> None:
     events = parser._read_events(run_id)
 
     if not events:
-        st.caption(
-            f"No delegation data available — showing mock example for depth {depth_level}"
-        )
-        rows = [
-            {
-                "#": 1,
-                "Run": "abc12345",
-                "Agent": "research",
-                "Duration": "3200ms",
-                "Tokens": 980,
-                "Cost ($)": "$0.0029",
-                "Ok": "yes",
-                "Finished": "2026-02-22 10:30:44",
-            },
-            {
-                "#": 2,
-                "Run": "abc12345",
-                "Agent": "main",
-                "Duration": "2100ms",
-                "Tokens": 654,
-                "Cost ($)": "$0.0019",
-                "Ok": "yes",
-                "Finished": "2026-02-22 10:30:55",
-            },
-        ]
-        df = pd.DataFrame(rows)
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "#": st.column_config.NumberColumn("#", format="%d", width="small"),
-                "Run": st.column_config.TextColumn("Run", width="small"),
-                "Agent": st.column_config.TextColumn("Agent", width="medium"),
-                "Duration": st.column_config.TextColumn("Duration", width="small"),
-                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
-                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
-                "Ok": st.column_config.TextColumn("Ok", width="small"),
-                "Finished": st.column_config.TextColumn("Finished"),
-            },
-        )
-        st.caption("2 occurrence(s) — 2 succeeded • 1634 total tokens • $0.0048 total cost (mock)")
+        st.caption("No data available.")
         return
 
     # Filter completed delegations at this depth.
@@ -2231,7 +1872,7 @@ def render_daily_breakdown_table(run_id: Optional[str] = None) -> None:
     A caption below the table summarises total days, total delegations,
     total successes, and cumulative cost — mirroring the CLI footer line.
 
-    Falls back to a synthetic mock example when no real data is present.
+    Shows an empty state when no real data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -2245,44 +1886,7 @@ def render_daily_breakdown_table(run_id: Optional[str] = None) -> None:
     events = parser._read_events(run_id)
 
     if not events:
-        st.caption("No delegation data available — showing mock example")
-        rows = [
-            {
-                "Date": "2026-02-20",
-                "Count": 14,
-                "Ok%": "92.9%",
-                "Tokens": 8_420,
-                "Cost ($)": "$0.0252",
-            },
-            {
-                "Date": "2026-02-21",
-                "Count": 22,
-                "Ok%": "100.0%",
-                "Tokens": 13_110,
-                "Cost ($)": "$0.0393",
-            },
-            {
-                "Date": "2026-02-22",
-                "Count": 9,
-                "Ok%": "88.9%",
-                "Tokens": 5_340,
-                "Cost ($)": "$0.0160",
-            },
-        ]
-        df = pd.DataFrame(rows)
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Date": st.column_config.TextColumn("Date", width="small"),
-                "Count": st.column_config.NumberColumn("Count", format="%d"),
-                "Ok%": st.column_config.TextColumn("Ok%", width="small"),
-                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
-                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
-            },
-        )
-        st.caption("3 day(s) • 45 total delegations • 43 succeeded • $0.0805 total cost (mock)")
+        st.caption("No data available.")
         return
 
     # Collect completed delegations, group by UTC calendar date.
@@ -2369,7 +1973,7 @@ def render_hourly_breakdown_table(run_id: Optional[str] = None) -> None:
     A caption below the table summarises active hours, total delegations,
     total successes, and cumulative cost — mirroring the CLI footer line.
 
-    Falls back to a synthetic mock example when no real data is present.
+    Shows an empty state when no real data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -2383,44 +1987,7 @@ def render_hourly_breakdown_table(run_id: Optional[str] = None) -> None:
     events = parser._read_events(run_id)
 
     if not events:
-        st.caption("No delegation data available — showing mock example")
-        rows = [
-            {
-                "Hour (UTC)": "09:xx",
-                "Count": 8,
-                "Ok%": "100.0%",
-                "Tokens": 4_800,
-                "Cost ($)": "$0.0144",
-            },
-            {
-                "Hour (UTC)": "14:xx",
-                "Count": 15,
-                "Ok%": "93.3%",
-                "Tokens": 9_300,
-                "Cost ($)": "$0.0279",
-            },
-            {
-                "Hour (UTC)": "21:xx",
-                "Count": 6,
-                "Ok%": "83.3%",
-                "Tokens": 3_540,
-                "Cost ($)": "$0.0106",
-            },
-        ]
-        df = pd.DataFrame(rows)
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Hour (UTC)": st.column_config.TextColumn("Hour (UTC)", width="small"),
-                "Count": st.column_config.NumberColumn("Count", format="%d"),
-                "Ok%": st.column_config.TextColumn("Ok%", width="small"),
-                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
-                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
-            },
-        )
-        st.caption("3 hour(s) active • 29 total delegations • 27 succeeded • $0.0529 total cost (mock)")
+        st.caption("No data available.")
         return
 
     # Collect completed delegations, group by UTC hour-of-day.
@@ -2510,7 +2077,7 @@ def render_monthly_breakdown_table(run_id: Optional[str] = None) -> None:
     A caption below the table summarises total months, total delegations,
     total successes, and cumulative cost — mirroring the CLI footer line.
 
-    Falls back to a synthetic mock example when no real data is present.
+    Shows an empty state when no real data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -2524,44 +2091,7 @@ def render_monthly_breakdown_table(run_id: Optional[str] = None) -> None:
     events = parser._read_events(run_id)
 
     if not events:
-        st.caption("No delegation data available — showing mock example")
-        rows = [
-            {
-                "Month": "2025-12",
-                "Count": 31,
-                "Ok%": "96.8%",
-                "Tokens": 18_600,
-                "Cost ($)": "$0.0558",
-            },
-            {
-                "Month": "2026-01",
-                "Count": 87,
-                "Ok%": "97.7%",
-                "Tokens": 52_200,
-                "Cost ($)": "$0.1566",
-            },
-            {
-                "Month": "2026-02",
-                "Count": 45,
-                "Ok%": "100.0%",
-                "Tokens": 27_000,
-                "Cost ($)": "$0.0810",
-            },
-        ]
-        df = pd.DataFrame(rows)
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Month": st.column_config.TextColumn("Month", width="small"),
-                "Count": st.column_config.NumberColumn("Count", format="%d"),
-                "Ok%": st.column_config.TextColumn("Ok%", width="small"),
-                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
-                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
-            },
-        )
-        st.caption("3 month(s) • 163 total delegations • 159 succeeded • $0.2934 total cost (mock)")
+        st.caption("No data available.")
         return
 
     # Collect completed delegations, group by UTC calendar month.
@@ -2653,7 +2183,7 @@ def render_quarterly_breakdown_table(run_id: Optional[str] = None) -> None:
     A caption below the table summarises total quarters, total delegations,
     total successes, and cumulative cost — mirroring the CLI footer line.
 
-    Falls back to a synthetic mock example when no real data is present.
+    Shows an empty state when no real data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -2674,37 +2204,7 @@ def render_quarterly_breakdown_table(run_id: Optional[str] = None) -> None:
     }
 
     if not events:
-        st.caption("No delegation data available — showing mock example")
-        rows = [
-            {
-                "Quarter": "2025-Q4",
-                "Count": 31,
-                "Ok%": "96.8%",
-                "Tokens": 18_600,
-                "Cost ($)": "$0.0558",
-            },
-            {
-                "Quarter": "2026-Q1",
-                "Count": 132,
-                "Ok%": "98.5%",
-                "Tokens": 79_200,
-                "Cost ($)": "$0.2376",
-            },
-        ]
-        df = pd.DataFrame(rows)
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Quarter": st.column_config.TextColumn("Quarter", width="small"),
-                "Count": st.column_config.NumberColumn("Count", format="%d"),
-                "Ok%": st.column_config.TextColumn("Ok%", width="small"),
-                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
-                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
-            },
-        )
-        st.caption("2 quarter(s) • 163 total delegations • 159 succeeded • $0.2934 total cost (mock)")
+        st.caption("No data available.")
         return
 
     # Collect completed delegations, group by UTC calendar quarter.
@@ -2795,7 +2295,7 @@ def render_agent_model_table(run_id: Optional[str] = None) -> None:
     A caption below the table summarises total distinct combinations, total
     delegation count, and cumulative cost — mirroring the CLI footer line.
 
-    Falls back to a synthetic mock example when no real data is present.
+    Shows an empty state when no real data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -2809,50 +2309,7 @@ def render_agent_model_table(run_id: Optional[str] = None) -> None:
     events = parser._read_events(run_id)
 
     if not events:
-        st.caption("No delegation data available — showing mock example")
-        rows = [
-            {
-                "#": 1,
-                "Agent": "researcher",
-                "Model": "claude-sonnet-4-6",
-                "Delegations": 47,
-                "Tokens": 28_200,
-                "Cost ($)": "$0.0846",
-            },
-            {
-                "#": 2,
-                "Agent": "coder",
-                "Model": "claude-opus-4-6",
-                "Delegations": 23,
-                "Tokens": 18_400,
-                "Cost ($)": "$0.0552",
-            },
-            {
-                "#": 3,
-                "Agent": "reviewer",
-                "Model": "claude-haiku-4-5",
-                "Delegations": 15,
-                "Tokens": 6_000,
-                "Cost ($)": "$0.0060",
-            },
-        ]
-        df = pd.DataFrame(rows)
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "#": st.column_config.NumberColumn("#", format="%d", width="small"),
-                "Agent": st.column_config.TextColumn("Agent"),
-                "Model": st.column_config.TextColumn("Model"),
-                "Delegations": st.column_config.NumberColumn("Delegations", format="%d"),
-                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
-                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
-            },
-        )
-        st.caption(
-            "3 combination(s)  \u2022  85 total delegations  \u2022  $0.1458 total cost (mock)"
-        )
+        st.caption("No data available.")
         return
 
     # Aggregate by (agent × model); value = [count, tokens, cost].
@@ -2935,7 +2392,7 @@ def render_provider_model_table(run_id: Optional[str] = None) -> None:
     A caption below the table summarises total distinct combinations, total
     delegation count, and cumulative cost — mirroring the CLI footer line.
 
-    Falls back to a synthetic mock example when no real data is present.
+    Shows an empty state when no real data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -2949,50 +2406,7 @@ def render_provider_model_table(run_id: Optional[str] = None) -> None:
     events = parser._read_events(run_id)
 
     if not events:
-        st.caption("No delegation data available — showing mock example")
-        rows = [
-            {
-                "#": 1,
-                "Provider": "anthropic",
-                "Model": "claude-sonnet-4-6",
-                "Delegations": 58,
-                "Tokens": 34_800,
-                "Cost ($)": "$0.1044",
-            },
-            {
-                "#": 2,
-                "Provider": "anthropic",
-                "Model": "claude-opus-4-6",
-                "Delegations": 12,
-                "Tokens": 9_600,
-                "Cost ($)": "$0.0288",
-            },
-            {
-                "#": 3,
-                "Provider": "openai",
-                "Model": "gpt-4o",
-                "Delegations": 7,
-                "Tokens": 4_200,
-                "Cost ($)": "$0.0126",
-            },
-        ]
-        df = pd.DataFrame(rows)
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "#": st.column_config.NumberColumn("#", format="%d", width="small"),
-                "Provider": st.column_config.TextColumn("Provider"),
-                "Model": st.column_config.TextColumn("Model"),
-                "Delegations": st.column_config.NumberColumn("Delegations", format="%d"),
-                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
-                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
-            },
-        )
-        st.caption(
-            "3 combination(s)  \u2022  77 total delegations  \u2022  $0.1458 total cost (mock)"
-        )
+        st.caption("No data available.")
         return
 
     # Aggregate by (provider × model); value = [count, tokens, cost].
@@ -3074,7 +2488,7 @@ def render_agent_provider_table(run_id: Optional[str] = None) -> None:
     A caption below the table summarises total distinct combinations, total
     delegation count, and cumulative cost — mirroring the CLI footer line.
 
-    Falls back to a synthetic mock example when no real data is present.
+    Shows an empty state when no real data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -3088,50 +2502,7 @@ def render_agent_provider_table(run_id: Optional[str] = None) -> None:
     events = parser._read_events(run_id)
 
     if not events:
-        st.caption("No delegation data available — showing mock example")
-        rows = [
-            {
-                "#": 1,
-                "Agent": "researcher",
-                "Provider": "anthropic",
-                "Delegations": 47,
-                "Tokens": 28_200,
-                "Cost ($)": "$0.0846",
-            },
-            {
-                "#": 2,
-                "Agent": "coder",
-                "Provider": "anthropic",
-                "Delegations": 23,
-                "Tokens": 13_800,
-                "Cost ($)": "$0.0414",
-            },
-            {
-                "#": 3,
-                "Agent": "coder",
-                "Provider": "openai",
-                "Delegations": 8,
-                "Tokens": 4_800,
-                "Cost ($)": "$0.0144",
-            },
-        ]
-        df = pd.DataFrame(rows)
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "#": st.column_config.NumberColumn("#", format="%d", width="small"),
-                "Agent": st.column_config.TextColumn("Agent"),
-                "Provider": st.column_config.TextColumn("Provider"),
-                "Delegations": st.column_config.NumberColumn("Delegations", format="%d"),
-                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
-                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
-            },
-        )
-        st.caption(
-            "3 combination(s)  \u2022  78 total delegations  \u2022  $0.1404 total cost (mock)"
-        )
+        st.caption("No data available.")
         return
 
     # Aggregate by (agent × provider); value = [count, tokens, cost].
@@ -3216,7 +2587,7 @@ def render_duration_bucket_table(run_id: Optional[str] = None) -> None:
     A caption below summarises populated bucket count, total delegations,
     successes, and cumulative cost — mirroring the CLI footer line.
 
-    Falls back to a synthetic mock example when no real data is present.
+    Shows an empty state when no real data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -3238,30 +2609,7 @@ def render_duration_bucket_table(run_id: Optional[str] = None) -> None:
     events = parser._read_events(run_id)
 
     if not events:
-        st.caption("No delegation data available — showing mock example")
-        rows = [
-            {"Bucket": "<500ms",   "Count": 12, "Ok%": "100.0%", "Tokens": 7_200, "Cost ($)": "$0.0216"},
-            {"Bucket": "500ms–2s", "Count": 34, "Ok%": "97.1%",  "Tokens": 20_400, "Cost ($)": "$0.0612"},
-            {"Bucket": "2s–10s",   "Count": 28, "Ok%": "96.4%",  "Tokens": 16_800, "Cost ($)": "$0.0504"},
-            {"Bucket": "10s–60s",  "Count": 9,  "Ok%": "88.9%",  "Tokens": 5_400,  "Cost ($)": "$0.0162"},
-        ]
-        df = pd.DataFrame(rows)
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Bucket": st.column_config.TextColumn("Bucket", width="small"),
-                "Count": st.column_config.NumberColumn("Count", format="%d"),
-                "Ok%": st.column_config.TextColumn("Ok%", width="small"),
-                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
-                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
-            },
-        )
-        st.caption(
-            "4 bucket(s) populated  \u2022  83 total delegations  "
-            "\u2022  80 succeeded  \u2022  $0.1494 total cost (mock)"
-        )
+        st.caption("No data available.")
         return
 
     # Accumulate per bucket: [count, success_count, tokens, cost]
@@ -3346,7 +2694,7 @@ def render_token_bucket_table(run_id: Optional[str] = None) -> None:
     A caption below summarises populated bucket count, total delegations,
     successes, and cumulative cost — mirroring the CLI footer line.
 
-    Falls back to a synthetic mock example when no real data is present.
+    Shows an empty state when no real data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -3368,29 +2716,7 @@ def render_token_bucket_table(run_id: Optional[str] = None) -> None:
     events = parser._read_events(run_id)
 
     if not events:
-        st.caption("No delegation data available \u2014 showing mock example")
-        rows = [
-            {"Bucket": "100\u2013999",   "Count": 15, "Ok%": "100.0%", "Tokens": 9_000,   "Cost ($)": "$0.0270"},
-            {"Bucket": "1k\u20139.9k",   "Count": 34, "Ok%": "97.1%",  "Tokens": 102_000, "Cost ($)": "$0.3060"},
-            {"Bucket": "10k\u201399.9k", "Count": 7,  "Ok%": "85.7%",  "Tokens": 73_500,  "Cost ($)": "$0.2940"},
-        ]
-        df = pd.DataFrame(rows)
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Bucket": st.column_config.TextColumn("Bucket", width="small"),
-                "Count": st.column_config.NumberColumn("Count", format="%d"),
-                "Ok%": st.column_config.TextColumn("Ok%", width="small"),
-                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
-                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
-            },
-        )
-        st.caption(
-            "3 bucket(s) populated  \u2022  56 total delegations  "
-            "\u2022  53 succeeded  \u2022  $0.6270 total cost (mock)"
-        )
+        st.caption("No data available.")
         return
 
     # Accumulate per bucket: [count, success_count, tokens, cost]
@@ -3474,7 +2800,7 @@ def render_cost_bucket_table(run_id: Optional[str] = None) -> None:
     A caption below summarises populated bucket count, total delegations,
     successes, and cumulative cost \u2014 mirroring the CLI footer line.
 
-    Falls back to a synthetic mock example when no real data is present.
+    Shows an empty state when no real data is present.
 
     Args:
         run_id: Optional run ID to filter. ``None`` aggregates all runs.
@@ -3496,29 +2822,7 @@ def render_cost_bucket_table(run_id: Optional[str] = None) -> None:
     events = parser._read_events(run_id)
 
     if not events:
-        st.caption("No delegation data available \u2014 showing mock example")
-        rows = [
-            {"Bucket": "<$0.001",           "Count": 18, "Ok%": "100.0%", "Tokens": 5_400,  "Cost ($)": "$0.0090"},
-            {"Bucket": "$0.001\u2013$0.01", "Count": 27, "Ok%": "96.3%",  "Tokens": 54_000, "Cost ($)": "$0.1620"},
-            {"Bucket": "$0.01\u2013$0.10",  "Count": 11, "Ok%": "90.9%",  "Tokens": 66_000, "Cost ($)": "$0.5280"},
-        ]
-        df = pd.DataFrame(rows)
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Bucket": st.column_config.TextColumn("Bucket", width="small"),
-                "Count": st.column_config.NumberColumn("Count", format="%d"),
-                "Ok%": st.column_config.TextColumn("Ok%", width="small"),
-                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
-                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
-            },
-        )
-        st.caption(
-            "3 bucket(s) populated  \u2022  56 total delegations  "
-            "\u2022  54 succeeded  \u2022  $0.6990 total cost (mock)"
-        )
+        st.caption("No data available.")
         return
 
     # Accumulate per bucket: [count, success_count, tokens, cost]
@@ -5788,13 +5092,8 @@ def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
             )
 
     if not agent_tokens:
-        st.caption("No token data available — showing mock example")
-        agent_tokens = {
-            "main": 4200,
-            "research": 2800,
-            "codebase_analyzer": 1100,
-            "doc_analyzer": 900,
-        }
+        st.caption("No data available.")
+        return
 
     sorted_agents = sorted(agent_tokens.items(), key=lambda x: x[1])
     agents = [a for a, _ in sorted_agents]
@@ -5840,13 +5139,8 @@ def render_cost_by_agent(run_id: Optional[str] = None) -> None:
             )
 
     if not agent_cost:
-        st.caption("No cost data available — showing mock example")
-        agent_cost = {
-            "main": 0.0126,
-            "research": 0.0084,
-            "codebase_analyzer": 0.0033,
-            "doc_analyzer": 0.0027,
-        }
+        st.caption("No data available.")
+        return
 
     sorted_agents = sorted(agent_cost.items(), key=lambda x: x[1])
     agents = [a for a, _ in sorted_agents]
@@ -5878,7 +5172,7 @@ def render_agent_leaderboard() -> None:
     selector). Two controls let the user choose the ranking metric and the
     number of agents to display.
 
-    Falls back gracefully to mock data when no real log is present.
+    Shows empty state when no real log is present.
     """
     st.markdown("#### Agent Leaderboard")
 
@@ -5901,7 +5195,7 @@ def render_agent_leaderboard() -> None:
         )
 
     parser = DelegationParser()
-    nodes = _collect_all_nodes(parser)  # transparent mock fallback when log is absent
+    nodes = _collect_all_nodes(parser)
 
     # Aggregate per agent
     agg: dict = {}
@@ -5968,97 +5262,85 @@ def render_run_diff() -> None:
     Renders its own independent pair of run selectors (not tied to the shared
     run selector above) so users can compare any two stored runs at any time.
 
-    When fewer than two real runs exist the charts show a synthetic mock example.
     When the same run is selected for both A and B a warning is shown instead.
+    When fewer than two real runs exist a caption is shown and the function returns.
     """
     st.markdown("#### Run Comparison")
 
     parser = DelegationParser()
     runs = parser.list_runs()
 
+    if len(runs) < 2:
+        st.caption("Fewer than 2 runs available.")
+        return
+
     # ── Run pair selectors ─────────────────────────────────────────────────
-    use_mock = len(runs) < 2
+    options = [r.label for r in runs]
+    sel_col1, sel_col2 = st.columns(2)
+    with sel_col1:
+        label_a = st.selectbox(
+            "Baseline (A)",
+            options=options,
+            index=0,
+            key="delegation_diff_run_a",
+            help="Baseline run for comparison",
+        )
+    with sel_col2:
+        label_b = st.selectbox(
+            "Compare (B)",
+            options=options,
+            index=min(1, len(options) - 1),
+            key="delegation_diff_run_b",
+            help="Run to compare against the baseline",
+        )
+    run_a_id = next((r.run_id for r in runs if r.label == label_a), None)
+    run_b_id = next((r.run_id for r in runs if r.label == label_b), None)
+    run_a_label = f"A [{run_a_id[:8]}…]" if run_a_id else "A"
+    run_b_label = f"B [{run_b_id[:8]}…]" if run_b_id else "B"
 
-    if use_mock:
-        st.caption("Fewer than 2 runs available — showing mock example")
-        run_a_id: Optional[str] = None
-        run_b_id: Optional[str] = None
-        run_a_label = "Run A (mock)"
-        run_b_label = "Run B (mock)"
-    else:
-        options = [r.label for r in runs]
-        sel_col1, sel_col2 = st.columns(2)
-        with sel_col1:
-            label_a = st.selectbox(
-                "Baseline (A)",
-                options=options,
-                index=0,
-                key="delegation_diff_run_a",
-                help="Baseline run for comparison",
-            )
-        with sel_col2:
-            label_b = st.selectbox(
-                "Compare (B)",
-                options=options,
-                index=min(1, len(options) - 1),
-                key="delegation_diff_run_b",
-                help="Run to compare against the baseline",
-            )
-        run_a_id = next((r.run_id for r in runs if r.label == label_a), None)
-        run_b_id = next((r.run_id for r in runs if r.label == label_b), None)
-        run_a_label = f"A [{run_a_id[:8]}…]" if run_a_id else "A"
-        run_b_label = f"B [{run_b_id[:8]}…]" if run_b_id else "B"
-
-        if run_a_id and run_b_id and run_a_id == run_b_id:
-            st.warning("Select two different runs to see a meaningful comparison.")
-            return
+    if run_a_id and run_b_id and run_a_id == run_b_id:
+        st.warning("Select two different runs to see a meaningful comparison.")
+        return
 
     # ── Collect per-agent aggregates for each run ──────────────────────────
-    if use_mock:
-        agents     = ["main", "research", "codebase_analyzer", "doc_analyzer"]
-        tok_a_vals = [3800, 2400, 800, 600]
-        tok_b_vals = [4200, 2800, 700, 900]
-        cost_a_vals = [0.0114, 0.0072, 0.0024, 0.0018]
-        cost_b_vals = [0.0126, 0.0084, 0.0021, 0.0027]
-    else:
-        def _agent_agg(rid: Optional[str]) -> dict:
-            nodes = []
-            real_roots = parser.parse_delegation_tree(rid)
-            def _walk(n: DelegationNode) -> None:
-                nodes.append(n)
-                for c in n.children:
-                    _walk(c)
-            for root in real_roots:
-                _walk(root)
-            agg: dict = {}
-            for node in nodes:
-                name = node.agent_name
-                if name not in agg:
-                    agg[name] = {"tokens": 0, "cost": 0.0}
-                if node.tokens_used is not None:
-                    agg[name]["tokens"] += node.tokens_used
-                if node.cost_usd is not None:
-                    agg[name]["cost"] += node.cost_usd
-            return agg
+    def _agent_agg(rid: Optional[str]) -> dict:
+        nodes = []
+        real_roots = parser.parse_delegation_tree(rid)
+        def _walk(n: DelegationNode) -> None:
+            nodes.append(n)
+            for c in n.children:
+                _walk(c)
+        for root in real_roots:
+            _walk(root)
+        agg: dict = {}
+        for node in nodes:
+            name = node.agent_name
+            if name not in agg:
+                agg[name] = {"tokens": 0, "cost": 0.0}
+            if node.tokens_used is not None:
+                agg[name]["tokens"] += node.tokens_used
+            if node.cost_usd is not None:
+                agg[name]["cost"] += node.cost_usd
+        return agg
 
-        agg_a = _agent_agg(run_a_id)
-        agg_b = _agent_agg(run_b_id)
+    agg_a = _agent_agg(run_a_id)
+    agg_b = _agent_agg(run_b_id)
 
-        all_agents = sorted(
-            set(agg_a.keys()) | set(agg_b.keys()),
-            key=lambda n: (agg_a.get(n, {}).get("tokens", 0)
-                           + agg_b.get(n, {}).get("tokens", 0)),
-            reverse=True,
-        )
-        if not all_agents:
-            st.caption("No completed delegation data for the selected runs.")
-            return
+    all_agents = sorted(
+        set(agg_a.keys()) | set(agg_b.keys()),
+        key=lambda n: (agg_a.get(n, {}).get("tokens", 0)
+                       + agg_b.get(n, {}).get("tokens", 0)),
+        reverse=True,
+    )
+    if not all_agents:
+        st.caption("No completed delegation data for the selected runs.")
+        return
 
-        agents      = all_agents
-        tok_a_vals  = [agg_a.get(n, {}).get("tokens", 0) for n in agents]
-        tok_b_vals  = [agg_b.get(n, {}).get("tokens", 0) for n in agents]
-        cost_a_vals = [agg_a.get(n, {}).get("cost", 0.0) for n in agents]
-        cost_b_vals = [agg_b.get(n, {}).get("cost", 0.0) for n in agents]
+    agents      = all_agents
+    tok_a_vals  = [agg_a.get(n, {}).get("tokens", 0) for n in agents]
+    tok_b_vals  = [agg_b.get(n, {}).get("tokens", 0) for n in agents]
+    cost_a_vals = [agg_a.get(n, {}).get("cost", 0.0) for n in agents]
+    cost_b_vals = [agg_b.get(n, {}).get("cost", 0.0) for n in agents]
 
     # Reverse for bottom-up display in horizontal bar charts
     agents_rev      = agents[::-1]
@@ -6166,8 +5448,7 @@ def render_export_buttons(run_id: Optional[str] = None) -> None:
     (columns matching ``zeroclaw delegations export --format csv``), one for
     JSONL (raw event lines straight from the delegation log).
 
-    Only real log data is offered for download; the mock fallback used by
-    charts is intentionally excluded. Buttons are disabled when no data is
+    Only real log data is offered for download. Buttons are disabled when no data is
     available.
 
     Args:
