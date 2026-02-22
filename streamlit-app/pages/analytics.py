@@ -279,6 +279,9 @@ def render() -> None:
         # Quarterly breakdown table — per-calendar-quarter aggregation (scoped to selected run when set)
         delegation_charts.render_quarterly_breakdown_table(run_id=selected_run_id)
 
+        # Agent × model cross-product breakdown table (scoped to selected run when set)
+        delegation_charts.render_agent_model_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
@@ -452,6 +455,13 @@ def render() -> None:
               cumulative cost; a caption line below summarises total quarters, total
               delegations, successes, and cumulative cost; mirrors
               `zeroclaw delegations quarterly`; scoped by the shared run selector;
+              shows a mock example when no real log data is available
+            - **Agent × Model Breakdown table** — cross-product of (agent_name ×
+              model) pairs ranked by total tokens consumed (descending); columns show
+              rank, agent name, model, delegation count, cumulative tokens, and
+              cumulative cost; a caption line below summarises total distinct
+              combinations, total delegations, and cumulative cost; mirrors
+              `zeroclaw delegations agent-model`; scoped by the shared run selector;
               shows a mock example when no real log data is available
             - **Agent Leaderboard** — horizontal bar chart ranking all agents by
               cumulative tokens or cost across every stored run; rank-by and top-N
