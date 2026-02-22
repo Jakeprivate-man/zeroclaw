@@ -1075,6 +1075,12 @@ Examples:
         #[arg(long)]
         run: Option<String>,
     },
+    /// Rank runs by total cost (most expensive run first)
+    RunCostRank {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
 Compare per-agent delegation statistics between two runs side-by-side.
@@ -1900,6 +1906,12 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::ProviderCostRank { run }) => {
                     observability::delegation_report::print_provider_cost_rank(
+                        &log_path,
+                        run.as_deref(),
+                    )
+                }
+                Some(DelegationCommands::RunCostRank { run }) => {
+                    observability::delegation_report::print_run_cost_rank(
                         &log_path,
                         run.as_deref(),
                     )
