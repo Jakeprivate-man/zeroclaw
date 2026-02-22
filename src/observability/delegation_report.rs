@@ -21,6 +21,7 @@
 //! - [`print_model`]: show all completed delegations for a named model, newest first.
 //! - [`print_provider`]: show all completed delegations for a named provider, newest first.
 //! - [`print_run`]: show all completed delegations for a specific run, oldest first.
+//! - [`print_depth_view`]: show all completed delegations at a given nesting depth, newest first.
 //! - [`get_log_summary`]: programmatic aggregate for `zeroclaw status`.
 //!
 //! All parsing is done via `serde_json::Value` — no new dependencies.
@@ -2407,6 +2408,152 @@ pub fn print_run(log_path: &Path, run_id: &str) -> Result<()> {
         .count();
     println!(
         "{} completed — {} succeeded  •  {} total tokens  •  ${:.4} total cost",
+        ends.len(),
+        success_count,
+        total_tokens,
+        total_cost,
+    );
+    Ok(())
+}
+
+/// Show all completed delegations at a given nesting depth, newest first.
+///
+/// Filters `DelegationEnd` events whose `depth` field equals `depth`.
+/// When `run_id` is `Some`, only events from that run are included.
+/// Results are sorted by timestamp descending (most recent first).
+///
+/// Output columns: # | run | agent | duration | tokens | cost | ok | finished (UTC)
+///
+/// The footer prints total occurrences, success count, cumulative tokens, and
+/// cumulative cost.
+pub fn print_depth_view(log_path: &Path, depth: u32, run_id: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    let events: Vec<&Value> = if let Some(rid) = run_id {
+        all_events
+            .iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events.iter().collect()
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    // Filter DelegationEnd events at this depth.
+    let mut ends: Vec<&Value> = events
+        .iter()
+        .copied()
+        .filter(|e| {
+            e.get("event_type").and_then(|x| x.as_str()) == Some("DelegationEnd")
+                && e.get("depth").and_then(|x| x.as_u64()) == Some(u64::from(depth))
+        })
+        .collect();
+
+    // Sort newest first.
+    ends.sort_by(|a, b| {
+        let ta = a.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
+        let tb = b.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
+        tb.cmp(ta)
+    });
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!(
+        "Delegation history for depth {depth}{scope}  [{} occurrence(s)]",
+        ends.len()
+    );
+    println!();
+
+    if ends.is_empty() {
+        println!("No completed delegations found at depth {depth}.");
+        return Ok(());
+    }
+
+    println!(
+        "{:>3}  {:<10}  {:<20}  {:>9}  {:>8}  {:>9}  {:>4}  {}",
+        "#", "run", "agent", "duration", "tokens", "cost", "ok", "finished (UTC)"
+    );
+    println!("{}", "─".repeat(89));
+
+    for (i, ev) in ends.iter().enumerate() {
+        let run = ev
+            .get("run_id")
+            .and_then(|x| x.as_str())
+            .map(|r| r.chars().take(8).collect::<String>())
+            .unwrap_or_else(|| "?".to_owned());
+        let agent = ev
+            .get("agent_name")
+            .and_then(|x| x.as_str())
+            .unwrap_or("?")
+            .to_owned();
+        let duration = ev
+            .get("duration_ms")
+            .and_then(|x| x.as_u64())
+            .map(fmt_duration)
+            .unwrap_or_else(|| "—".to_owned());
+        let tokens = ev
+            .get("tokens_used")
+            .and_then(|x| x.as_u64())
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "—".to_owned());
+        let cost = ev
+            .get("cost_usd")
+            .and_then(|x| x.as_f64())
+            .map(|c| format!("${c:.4}"))
+            .unwrap_or_else(|| "—".to_owned());
+        let ok = ev
+            .get("success")
+            .and_then(|x| x.as_bool())
+            .map(|s| if s { "yes" } else { "no" })
+            .unwrap_or("?");
+        let finished = ev
+            .get("timestamp")
+            .and_then(|x| x.as_str())
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| {
+                dt.with_timezone(&Utc)
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "?".to_owned());
+        println!(
+            "{:>3}  {:<10}  {:<20}  {:>9}  {:>8}  {:>9}  {:>4}  {}",
+            i + 1,
+            run,
+            agent,
+            duration,
+            tokens,
+            cost,
+            ok,
+            finished,
+        );
+    }
+
+    println!("{}", "─".repeat(89));
+    let total_tokens: u64 = ends
+        .iter()
+        .filter_map(|e| e.get("tokens_used").and_then(|x| x.as_u64()))
+        .sum();
+    let total_cost: f64 = ends
+        .iter()
+        .filter_map(|e| e.get("cost_usd").and_then(|x| x.as_f64()))
+        .sum();
+    let success_count = ends
+        .iter()
+        .filter(|e| e.get("success").and_then(|x| x.as_bool()) == Some(true))
+        .count();
+    println!(
+        "{} occurrence(s) — {} succeeded  •  {} total tokens  •  ${:.4} total cost",
         ends.len(),
         success_count,
         total_tokens,
@@ -5494,6 +5641,119 @@ mod tests {
         }
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_run(&path, "run-mixed");
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    // ── print_depth_view tests ────────────────────────────────────────────────
+
+    #[test]
+    fn print_depth_view_missing_log() {
+        let path = std::env::temp_dir().join("zeroclaw_test_depthview_missing.jsonl");
+        let _ = std::fs::remove_file(&path);
+        let result = print_depth_view(&path, 0, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_depth_view_empty_log() {
+        let path = std::env::temp_dir().join("zeroclaw_test_depthview_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_depth_view(&path, 0, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_depth_view_no_matching_ends() {
+        let path = std::env::temp_dir().join("zeroclaw_test_depthview_nomatch.jsonl");
+        let line = serde_json::to_string(&make_end(
+            "run-a",
+            "research",
+            2,
+            "2026-01-01T10:00:00Z",
+            100,
+            0.001,
+            true,
+        ))
+        .unwrap();
+        std::fs::write(&path, line + "\n").unwrap();
+        let result = print_depth_view(&path, 0, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_depth_view_newest_first() {
+        let path = std::env::temp_dir().join("zeroclaw_test_depthview_newest.jsonl");
+        let mut lines = Vec::new();
+        for ts in &["2026-01-01T10:00:02Z", "2026-01-01T10:00:01Z"] {
+            lines.push(
+                serde_json::to_string(&make_end(
+                    "run-a",
+                    "research",
+                    0,
+                    ts,
+                    100,
+                    0.001,
+                    true,
+                ))
+                .unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_depth_view(&path, 0, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_depth_view_excludes_other_depths() {
+        let path = std::env::temp_dir().join("zeroclaw_test_depthview_excludes.jsonl");
+        let mut lines = Vec::new();
+        for depth in &[0u32, 1, 2] {
+            lines.push(
+                serde_json::to_string(&make_end(
+                    "run-a",
+                    "research",
+                    *depth,
+                    "2026-01-01T10:00:00Z",
+                    100,
+                    0.001,
+                    true,
+                ))
+                .unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_depth_view(&path, 1, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_depth_view_filters_by_run() {
+        let path = std::env::temp_dir().join("zeroclaw_test_depthview_runfilter.jsonl");
+        let mut lines = Vec::new();
+        for (run, ts) in &[
+            ("run-keep", "2026-01-01T10:00:01Z"),
+            ("run-skip", "2026-01-02T10:00:01Z"),
+        ] {
+            lines.push(
+                serde_json::to_string(&make_end(
+                    run,
+                    "research",
+                    0,
+                    ts,
+                    200,
+                    0.001,
+                    true,
+                ))
+                .unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_depth_view(&path, 0, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }
