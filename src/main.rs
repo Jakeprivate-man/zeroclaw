@@ -865,6 +865,25 @@ Examples:
         #[arg(long)]
         run: Option<String>,
     },
+    /// Cross-product (agent × model) breakdown ranked by tokens consumed
+    #[command(long_about = "\
+Aggregate all completed delegations by the (agent_name × model) cross-product
+and rank pairs by total tokens consumed (descending).  Use `--run` to scope
+to a single run.
+
+Output columns: # | agent | model | delegations | tokens | cost
+
+The footer shows total distinct combinations, total delegation count, and
+cumulative cost.
+
+Examples:
+  zeroclaw delegations agent-model              # all runs, cross-product breakdown
+  zeroclaw delegations agent-model --run <id>   # one run only")]
+    AgentModel {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
 Compare per-agent delegation statistics between two runs side-by-side.
@@ -1585,6 +1604,12 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::Quarterly { run }) => {
                     observability::delegation_report::print_quarterly(&log_path, run.as_deref())
+                }
+                Some(DelegationCommands::AgentModel { run }) => {
+                    observability::delegation_report::print_agent_model(
+                        &log_path,
+                        run.as_deref(),
+                    )
                 }
                 Some(DelegationCommands::Diff { run_a, run_b }) => {
                     observability::delegation_report::print_diff(
