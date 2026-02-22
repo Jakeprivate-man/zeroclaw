@@ -258,6 +258,9 @@ def render() -> None:
         # Model history table — per-model delegation history (scoped to selected run when set)
         delegation_charts.render_model_history_table(run_id=selected_run_id)
 
+        # Provider history table — per-provider delegation history (scoped to selected run when set)
+        delegation_charts.render_provider_history_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
@@ -374,6 +377,17 @@ def render() -> None:
               `zeroclaw delegations model <name>`; scoped by the shared run
               selector; shows a mock example when no real log data is available;
               hides the table and returns early when the model name field is left
+              blank
+            - **Provider History table** — text input for a provider name (exact,
+              case-sensitive match); shows every completed delegation for that
+              provider sorted newest first; includes Agent and Model columns so
+              different agents and models on the same provider are distinguishable;
+              columns show run prefix, agent, model, depth, duration, tokens, cost,
+              ok flag, and finish timestamp; a caption line below summarises total
+              occurrences, success count, cumulative tokens, and cumulative cost;
+              mirrors `zeroclaw delegations provider <name>`; scoped by the shared
+              run selector; shows a mock example when no real log data is available;
+              hides the table and returns early when the provider name field is left
               blank
             - **Agent Leaderboard** — horizontal bar chart ranking all agents by
               cumulative tokens or cost across every stored run; rank-by and top-N
