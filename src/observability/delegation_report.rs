@@ -28,7 +28,7 @@
 //! All parsing is done via `serde_json::Value` — no new dependencies.
 
 use anyhow::{bail, Result};
-use chrono::{DateTime, Datelike, Utc};
+use chrono::{DateTime, Datelike, Timelike, Utc};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -4408,6 +4408,93 @@ pub fn print_provider_tier(log_path: &Path, run_id: Option<&str>) -> Result<()> 
     println!("{}", "\u{2500}".repeat(54));
     println!(
         "{} tier(s) populated  \u{2022}  {} total delegations  \u{2022}  {} succeeded  \u{2022}  ${:.4} total cost",
+        populated,
+        total_count,
+        total_success,
+        total_cost,
+    );
+    Ok(())
+}
+
+/// Show delegation counts, success rate, token usage, and cost bucketed by
+/// time of day: night (00–05), morning (06–11), afternoon (12–17), evening (18–23).
+///
+/// Hour is derived from the UTC timestamp on each `DelegationEnd` event.
+/// When `run_id` is `Some`, only events from that run are included.
+/// Produces no output (and returns `Ok`) when the log is absent or empty.
+pub fn print_time_of_day(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    const LABELS: [&str; 4] = [
+        "night (00-05)",
+        "morning (06-11)",
+        "afternoon (12-17)",
+        "evening (18-23)",
+    ];
+    let mut buckets: [(usize, usize, u64, f64); 4] = [(0, 0, 0, 0.0); 4];
+
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        return Ok(());
+    }
+
+    for ev in &all_events {
+        if ev.get("event_type").and_then(|v| v.as_str()).unwrap_or("") != "DelegationEnd" {
+            continue;
+        }
+        if let Some(rid) = run_id {
+            if ev.get("run_id").and_then(|v| v.as_str()).unwrap_or("") != rid {
+                continue;
+            }
+        }
+        let ts = ev.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+        let hour = if let Ok(dt) = DateTime::parse_from_rfc3339(ts) {
+            dt.with_timezone(&Utc).hour()
+        } else {
+            continue;
+        };
+        let idx: usize = match hour {
+            0..=5 => 0,
+            6..=11 => 1,
+            12..=17 => 2,
+            _ => 3,
+        };
+        let tokens = ev.get("tokens_used").and_then(|v| v.as_u64()).unwrap_or(0);
+        let cost = ev.get("cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let success = ev.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+        let (c, s, t, co) = buckets[idx];
+        buckets[idx] = (c + 1, s + if success { 1 } else { 0 }, t + tokens, co + cost);
+    }
+
+    if buckets.iter().all(|(c, ..)| *c == 0) {
+        return Ok(());
+    }
+
+    let sep = "\u{2500}".repeat(61);
+    println!("{:<18}  {:>7}  {:>8}  {:>10}  {:>10}", "period", "count", "ok%", "tokens", "cost ($)");
+    println!("{sep}");
+
+    let mut total_count = 0usize;
+    let mut total_success = 0usize;
+    let mut total_cost = 0.0f64;
+    let mut populated = 0usize;
+
+    for (i, &(count, success_count, tokens, cost)) in buckets.iter().enumerate() {
+        if count == 0 {
+            continue;
+        }
+        populated += 1;
+        let ok_pct = 100.0 * success_count as f64 / count as f64;
+        println!(
+            "{:<18}  {:>7}  {:>7.1}%  {:>10}  {:>10.4}",
+            LABELS[i], count, ok_pct, tokens, cost,
+        );
+        total_count += count;
+        total_success += success_count;
+        total_cost += cost;
+    }
+
+    println!("{sep}");
+    println!(
+        "{} bucket(s) populated  \u{2022}  {} total delegations  \u{2022}  {} succeeded  \u{2022}  ${:.4} total cost",
         populated,
         total_count,
         total_success,
@@ -9205,6 +9292,126 @@ mod tests {
         ];
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_provider_tier(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    // ── Phase 83: print_time_of_day ──────────────────────────────────────────
+
+    fn make_tod_event(
+        run_id: &str,
+        tokens: u64,
+        cost: f64,
+        success: bool,
+        ts: &str,
+    ) -> String {
+        serde_json::to_string(&serde_json::json!({
+            "event_type": "DelegationEnd",
+            "run_id": run_id,
+            "agent_name": "researcher",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "depth": 0u32,
+            "duration_ms": 1000u64,
+            "tokens_used": tokens,
+            "cost_usd": cost,
+            "success": success,
+            "timestamp": ts,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn print_time_of_day_all_periods() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_tod_all.jsonl");
+        let lines = vec![
+            // night: 03:00
+            make_tod_event("run1", 100, 0.001, true, "2026-02-09T03:00:00Z"),
+            // morning: 08:00
+            make_tod_event("run1", 200, 0.002, true, "2026-02-09T08:00:00Z"),
+            // afternoon: 14:00
+            make_tod_event("run1", 300, 0.003, false, "2026-02-09T14:00:00Z"),
+            // evening: 20:00
+            make_tod_event("run1", 150, 0.001, true, "2026-02-09T20:00:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_time_of_day(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_time_of_day_empty_log() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_tod_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_time_of_day(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_time_of_day_missing_log() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_tod_missing_XXXX.jsonl");
+        let _ = std::fs::remove_file(&path);
+        let result = print_time_of_day(&path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_time_of_day_only_delegation_end() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_tod_evtype.jsonl");
+        let start_ev = serde_json::to_string(&serde_json::json!({
+            "event_type": "DelegationStart",
+            "run_id": "run1",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "depth": 0u32,
+            "timestamp": "2026-02-09T10:00:00Z",
+        }))
+        .unwrap();
+        let end_ev = make_tod_event("run1", 400, 0.004, true, "2026-02-09T10:01:00Z");
+        std::fs::write(&path, format!("{start_ev}\n{end_ev}\n")).unwrap();
+        let result = print_time_of_day(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_time_of_day_boundary_hours() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_tod_boundary.jsonl");
+        let lines = vec![
+            // boundary of night (00:00) → night bucket
+            make_tod_event("run1", 100, 0.001, true, "2026-02-09T00:00:00Z"),
+            // boundary of night/morning (06:00) → morning bucket
+            make_tod_event("run1", 100, 0.001, true, "2026-02-09T06:00:00Z"),
+            // boundary of morning/afternoon (12:00) → afternoon bucket
+            make_tod_event("run1", 100, 0.001, true, "2026-02-09T12:00:00Z"),
+            // boundary of afternoon/evening (18:00) → evening bucket
+            make_tod_event("run1", 100, 0.001, true, "2026-02-09T18:00:00Z"),
+            // last hour of evening (23:59) → evening bucket
+            make_tod_event("run1", 100, 0.001, true, "2026-02-09T23:59:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_time_of_day(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_time_of_day_filters_by_run() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_tod_runfilter.jsonl");
+        let lines = vec![
+            make_tod_event("run-keep", 500, 0.005, true, "2026-02-09T09:00:00Z"),
+            make_tod_event("run-skip", 500, 0.005, true, "2026-02-09T15:00:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_time_of_day(&path, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }
