@@ -1081,6 +1081,12 @@ Examples:
         #[arg(long)]
         run: Option<String>,
     },
+    /// Rank agents by success rate (most reliable first)
+    AgentSuccessRank {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
 Compare per-agent delegation statistics between two runs side-by-side.
@@ -1912,6 +1918,12 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::RunCostRank { run }) => {
                     observability::delegation_report::print_run_cost_rank(
+                        &log_path,
+                        run.as_deref(),
+                    )
+                }
+                Some(DelegationCommands::AgentSuccessRank { run }) => {
+                    observability::delegation_report::print_agent_success_rank(
                         &log_path,
                         run.as_deref(),
                     )
