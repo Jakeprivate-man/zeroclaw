@@ -4284,6 +4284,138 @@ pub fn print_model_tier(log_path: &Path, run_id: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Aggregate completed delegations by provider tier and print a breakdown
+/// table, ordered anthropic → openai → google → other.
+///
+/// Tier assignment is based on a case-insensitive substring match on the
+/// `provider` field:
+///   anthropic  provider name contains "anthropic"
+///   openai     provider name contains "openai"
+///   google     provider name contains "google"
+///   other      everything else (including missing/null provider)
+///
+/// Only `DelegationEnd` events are counted.  Empty tiers are omitted.
+/// Use `run_id` to scope to a single process invocation; `None` aggregates
+/// across every stored run.
+///
+/// Output columns: tier | count | ok% | tokens | cost
+pub fn print_provider_tier(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    const LABELS: [&str; 4] = ["anthropic", "openai", "google", "other"];
+
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    let events: Vec<&Value> = if let Some(rid) = run_id {
+        all_events
+            .iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events.iter().collect()
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    // tiers[i] = (count, success_count, tokens, cost)
+    // 0=anthropic, 1=openai, 2=google, 3=other
+    let mut tiers: [(usize, usize, u64, f64); 4] = [(0, 0, 0, 0.0); 4];
+
+    for ev in &events {
+        if ev.get("event_type").and_then(|x| x.as_str()) != Some("DelegationEnd") {
+            continue;
+        }
+        let provider = ev
+            .get("provider")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let idx = if provider.contains("anthropic") {
+            0
+        } else if provider.contains("openai") {
+            1
+        } else if provider.contains("google") {
+            2
+        } else {
+            3
+        };
+        let ok = ev.get("success").and_then(|x| x.as_bool()).unwrap_or(false);
+        let tokens = ev
+            .get("tokens_used")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        let cost = ev
+            .get("cost_usd")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0);
+        tiers[idx].0 += 1;
+        if ok {
+            tiers[idx].1 += 1;
+        }
+        tiers[idx].2 += tokens;
+        tiers[idx].3 += cost;
+    }
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!("Provider Tier Breakdown{scope}");
+    println!();
+    println!(
+        "{:<11}  {:>7}  {:>8}  {:>10}  {:>10}",
+        "tier", "count", "ok%", "tokens", "cost"
+    );
+    println!("{}", "\u{2500}".repeat(54));
+
+    let mut total_count: usize = 0;
+    let mut total_success: usize = 0;
+    let mut total_tokens: u64 = 0;
+    let mut total_cost: f64 = 0.0;
+    let mut populated: usize = 0;
+
+    for (i, (count, success_count, tokens, cost)) in tiers.iter().enumerate() {
+        if *count == 0 {
+            continue;
+        }
+        populated += 1;
+        let ok_pct = format!("{:.1}%", 100.0 * (*success_count as f64) / (*count as f64));
+        let tok_str = if *tokens > 0 {
+            tokens.to_string()
+        } else {
+            "\u{2014}".to_owned()
+        };
+        let cost_str = if *cost > 0.0 {
+            format!("${cost:.4}")
+        } else {
+            "\u{2014}".to_owned()
+        };
+        println!(
+            "{:<11}  {:>7}  {:>8}  {:>10}  {:>10}",
+            LABELS[i], count, ok_pct, tok_str, cost_str,
+        );
+        total_count += count;
+        total_success += success_count;
+        total_tokens += tokens;
+        total_cost += cost;
+    }
+
+    println!("{}", "\u{2500}".repeat(54));
+    println!(
+        "{} tier(s) populated  \u{2022}  {} total delegations  \u{2022}  {} succeeded  \u{2022}  ${:.4} total cost",
+        populated,
+        total_count,
+        total_success,
+        total_cost,
+    );
+    Ok(())
+}
+
 /// `ExportFormat::Csv`: emits a header row followed by one row per
 /// `DelegationEnd` event with columns:
 /// `run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp`
@@ -8931,6 +9063,148 @@ mod tests {
         }
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_model_tier(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    // ── Phase 81: print_provider_tier ────────────────────────────────────────
+
+    fn make_provider_tier_event(
+        run_id: &str,
+        provider: &str,
+        tokens: u64,
+        cost: f64,
+        success: bool,
+        ts: &str,
+    ) -> String {
+        serde_json::to_string(&serde_json::json!({
+            "event_type": "DelegationEnd",
+            "run_id": run_id,
+            "agent_name": "researcher",
+            "provider": provider,
+            "model": "claude-sonnet-4-6",
+            "depth": 0u32,
+            "duration_ms": 1000u64,
+            "tokens_used": tokens,
+            "cost_usd": cost,
+            "success": success,
+            "timestamp": ts,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn print_provider_tier_all_providers() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_provider_tier_all.jsonl");
+        let lines = vec![
+            make_provider_tier_event(
+                "run1", "anthropic", 200, 0.002, true, "2026-02-01T10:00:00Z",
+            ),
+            make_provider_tier_event(
+                "run1", "openai", 300, 0.003, true, "2026-02-01T11:00:00Z",
+            ),
+            make_provider_tier_event(
+                "run1", "google", 150, 0.001, false, "2026-02-01T12:00:00Z",
+            ),
+            make_provider_tier_event(
+                "run1", "bedrock", 100, 0.001, true, "2026-02-01T13:00:00Z",
+            ),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_provider_tier(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_provider_tier_empty() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_provider_tier_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_provider_tier(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_provider_tier_case_insensitive() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_provider_tier_case.jsonl");
+        let lines = vec![
+            make_provider_tier_event(
+                "run1", "Anthropic", 200, 0.002, true, "2026-02-01T10:00:00Z",
+            ),
+            make_provider_tier_event(
+                "run1", "OPENAI", 300, 0.003, true, "2026-02-01T11:00:00Z",
+            ),
+            make_provider_tier_event(
+                "run1", "Google-Vertex", 150, 0.001, true, "2026-02-01T12:00:00Z",
+            ),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_provider_tier(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_provider_tier_aggregates_costs() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_provider_tier_agg.jsonl");
+        let lines = vec![
+            make_provider_tier_event(
+                "run1", "anthropic", 100, 0.001, true, "2026-02-01T10:00:00Z",
+            ),
+            make_provider_tier_event(
+                "run1", "anthropic", 200, 0.002, false, "2026-02-01T11:00:00Z",
+            ),
+            make_provider_tier_event(
+                "run1", "anthropic", 300, 0.003, true, "2026-02-01T12:00:00Z",
+            ),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_provider_tier(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_provider_tier_only_delegation_end() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_provider_tier_evtype.jsonl");
+        let start_ev = serde_json::to_string(&serde_json::json!({
+            "event_type": "DelegationStart",
+            "run_id": "run1",
+            "provider": "openai",
+            "model": "gpt-4o",
+            "depth": 0u32,
+            "timestamp": "2026-02-01T10:00:00Z",
+        }))
+        .unwrap();
+        let end_ev = make_provider_tier_event(
+            "run1", "openai", 400, 0.004, true, "2026-02-01T10:01:00Z",
+        );
+        std::fs::write(&path, format!("{start_ev}\n{end_ev}\n")).unwrap();
+        let result = print_provider_tier(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_provider_tier_filters_by_run() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_provider_tier_runfilter.jsonl");
+        let lines = vec![
+            make_provider_tier_event(
+                "run-keep", "anthropic", 500, 0.005, true, "2026-02-01T10:00:00Z",
+            ),
+            make_provider_tier_event(
+                "run-skip", "openai", 500, 0.005, true, "2026-02-01T11:00:00Z",
+            ),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_provider_tier(&path, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }
