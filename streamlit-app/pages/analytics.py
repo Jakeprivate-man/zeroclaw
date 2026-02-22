@@ -366,6 +366,9 @@ def render() -> None:
         # Provider duration rank table (scoped to selected run when set)
         delegation_charts.render_provider_duration_rank_table(run_id=selected_run_id)
 
+        # Run duration rank table (scoped to selected run when set)
+        delegation_charts.render_run_duration_rank_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
