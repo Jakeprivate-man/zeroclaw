@@ -4503,6 +4503,83 @@ pub fn print_time_of_day(log_path: &Path, run_id: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Show delegation counts, success rate, token usage, and cost grouped by
+/// day of month (1–31), sorted numerically.  Useful for spotting calendar
+/// patterns and end-of-month activity spikes.
+///
+/// Day is derived from the UTC timestamp on each `DelegationEnd` event.
+/// When `run_id` is `Some`, only events from that run are included.
+/// Produces no output (and returns `Ok`) when the log is absent or empty.
+pub fn print_day_of_month(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    let mut map: std::collections::BTreeMap<u32, (usize, usize, u64, f64)> =
+        std::collections::BTreeMap::new();
+
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        return Ok(());
+    }
+
+    for ev in &all_events {
+        if ev.get("event_type").and_then(|v| v.as_str()).unwrap_or("") != "DelegationEnd" {
+            continue;
+        }
+        if let Some(rid) = run_id {
+            if ev.get("run_id").and_then(|v| v.as_str()).unwrap_or("") != rid {
+                continue;
+            }
+        }
+        let ts = ev.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+        let day = if let Ok(dt) = DateTime::parse_from_rfc3339(ts) {
+            dt.with_timezone(&Utc).day()
+        } else {
+            continue;
+        };
+        let tokens = ev.get("tokens_used").and_then(|v| v.as_u64()).unwrap_or(0);
+        let cost = ev.get("cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let success = ev.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+        let entry = map.entry(day).or_insert((0, 0, 0, 0.0));
+        entry.0 += 1;
+        if success {
+            entry.1 += 1;
+        }
+        entry.2 += tokens;
+        entry.3 += cost;
+    }
+
+    if map.is_empty() {
+        return Ok(());
+    }
+
+    let sep = "\u{2500}".repeat(47);
+    println!("{:<4}  {:>7}  {:>8}  {:>10}  {:>10}", "day", "count", "ok%", "tokens", "cost ($)");
+    println!("{sep}");
+
+    let mut total_count = 0usize;
+    let mut total_success = 0usize;
+    let mut total_cost = 0.0f64;
+
+    for (&day, &(count, success_count, tokens, cost)) in &map {
+        let ok_pct = 100.0 * success_count as f64 / count as f64;
+        println!(
+            "{:<4}  {:>7}  {:>7.1}%  {:>10}  {:>10.4}",
+            day, count, ok_pct, tokens, cost,
+        );
+        total_count += count;
+        total_success += success_count;
+        total_cost += cost;
+    }
+
+    println!("{sep}");
+    println!(
+        "{} day(s) active  \u{2022}  {} total delegations  \u{2022}  {} succeeded  \u{2022}  ${:.4} total cost",
+        map.len(),
+        total_count,
+        total_success,
+        total_cost,
+    );
+    Ok(())
+}
+
 /// `ExportFormat::Csv`: emits a header row followed by one row per
 /// `DelegationEnd` event with columns:
 /// `run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp`
@@ -9412,6 +9489,120 @@ mod tests {
         ];
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_time_of_day(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    // ── Phase 85: print_day_of_month ─────────────────────────────────────────
+
+    fn make_dom_event(
+        run_id: &str,
+        tokens: u64,
+        cost: f64,
+        success: bool,
+        ts: &str,
+    ) -> String {
+        serde_json::to_string(&serde_json::json!({
+            "event_type": "DelegationEnd",
+            "run_id": run_id,
+            "agent_name": "researcher",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "depth": 0u32,
+            "duration_ms": 1000u64,
+            "tokens_used": tokens,
+            "cost_usd": cost,
+            "success": success,
+            "timestamp": ts,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn print_day_of_month_multiple_days() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_dom_multi.jsonl");
+        let lines = vec![
+            // day 1
+            make_dom_event("run1", 100, 0.001, true, "2026-02-01T10:00:00Z"),
+            // day 9
+            make_dom_event("run1", 200, 0.002, true, "2026-02-09T14:00:00Z"),
+            // day 9 again (aggregated)
+            make_dom_event("run1", 150, 0.001, false, "2026-02-09T18:00:00Z"),
+            // day 22
+            make_dom_event("run1", 300, 0.003, true, "2026-02-22T08:00:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_day_of_month(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_day_of_month_empty_log() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_dom_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_day_of_month(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_day_of_month_missing_log() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_dom_missing_XXXX.jsonl");
+        let _ = std::fs::remove_file(&path);
+        let result = print_day_of_month(&path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_day_of_month_only_delegation_end() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_dom_evtype.jsonl");
+        let start_ev = serde_json::to_string(&serde_json::json!({
+            "event_type": "DelegationStart",
+            "run_id": "run1",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "depth": 0u32,
+            "timestamp": "2026-02-15T10:00:00Z",
+        }))
+        .unwrap();
+        let end_ev = make_dom_event("run1", 400, 0.004, true, "2026-02-15T10:01:00Z");
+        std::fs::write(&path, format!("{start_ev}\n{end_ev}\n")).unwrap();
+        let result = print_day_of_month(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_day_of_month_sorted_numerically() {
+        // Events on day 28, 1, 5 — BTreeMap ensures output in order 1, 5, 28
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_dom_sort.jsonl");
+        let lines = vec![
+            make_dom_event("run1", 100, 0.001, true, "2026-02-28T10:00:00Z"),
+            make_dom_event("run1", 100, 0.001, true, "2026-02-01T10:00:00Z"),
+            make_dom_event("run1", 100, 0.001, true, "2026-02-05T10:00:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_day_of_month(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_day_of_month_filters_by_run() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_dom_runfilter.jsonl");
+        let lines = vec![
+            make_dom_event("run-keep", 500, 0.005, true, "2026-02-10T09:00:00Z"),
+            make_dom_event("run-skip", 500, 0.005, true, "2026-02-20T15:00:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_day_of_month(&path, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }
