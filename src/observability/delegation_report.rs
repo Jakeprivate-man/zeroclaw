@@ -4840,6 +4840,111 @@ pub fn print_agent_cost_rank(log_path: &Path, run_id: Option<&str>) -> Result<()
     Ok(())
 }
 
+/// Ranks models by average cost per delegation (most expensive per call first).
+///
+/// Answers "which model is most expensive per individual invocation?" — distinct from
+/// `print_models` (sorted by total tokens) and `print_top --by cost` (agent-level totals).
+///
+/// Columns: # | model | delegations | ok% | avg_cost | avg_tokens | total_cost
+///
+/// When `run_id` is `Some`, only events from that run are included.
+/// Produces no output (and returns `Ok`) when the log is absent or empty.
+pub fn print_model_cost_rank(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        return Ok(());
+    }
+
+    let events: Vec<Value> = if let Some(rid) = run_id {
+        all_events
+            .into_iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events
+    };
+
+    // model → (count, success_count, tokens, total_cost)
+    let mut map: std::collections::HashMap<String, (usize, usize, u64, f64)> =
+        std::collections::HashMap::new();
+
+    for ev in &events {
+        if ev.get("event_type").and_then(|x| x.as_str()) != Some("DelegationEnd") {
+            continue;
+        }
+        let model = ev
+            .get("model")
+            .and_then(|x| x.as_str())
+            .unwrap_or("unknown")
+            .to_owned();
+        let success = ev.get("success").and_then(|x| x.as_bool()).unwrap_or(false);
+        let tokens = ev.get("tokens_used").and_then(|x| x.as_u64()).unwrap_or(0);
+        let cost = ev.get("cost_usd").and_then(|x| x.as_f64()).unwrap_or(0.0);
+        let e = map.entry(model).or_insert((0, 0, 0, 0.0));
+        e.0 += 1;
+        if success {
+            e.1 += 1;
+        }
+        e.2 += tokens;
+        e.3 += cost;
+    }
+
+    if map.is_empty() {
+        return Ok(());
+    }
+
+    // Sort by avg_cost per delegation descending, break ties by model name ascending.
+    let mut rows: Vec<(String, usize, usize, u64, f64)> = map
+        .into_iter()
+        .map(|(model, (count, ok, tokens, cost))| (model, count, ok, tokens, cost))
+        .collect();
+    rows.sort_by(|a, b| {
+        let avg_a = a.4 / a.1 as f64;
+        let avg_b = b.4 / b.1 as f64;
+        avg_b.partial_cmp(&avg_a).unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!("Model cost rank — avg cost per delegation{scope}");
+    println!();
+    println!(
+        "{:>3}  {:<34}  {:>7}  {:>8}  {:>10}  {:>10}  {:>10}",
+        "#", "model", "count", "ok%", "avg_cost", "avg_tok", "total_cost"
+    );
+    println!("{}", "─".repeat(92));
+
+    for (rank, (model, count, ok, tokens, cost)) in rows.iter().enumerate() {
+        let ok_pct = 100.0 * (*ok as f64) / (*count as f64);
+        let avg_cost = cost / (*count as f64);
+        let avg_tok = *tokens as f64 / (*count as f64);
+        println!(
+            "{:>3}  {:<34}  {:>7}  {:>7.1}%  {:>10.4}  {:>10.0}  {:>10.4}",
+            rank + 1,
+            model,
+            count,
+            ok_pct,
+            avg_cost,
+            avg_tok,
+            cost
+        );
+    }
+
+    println!("{}", "─".repeat(92));
+    let total_delegations: usize = rows.iter().map(|(_, c, _, _, _)| c).sum();
+    let total_cost: f64 = rows.iter().map(|(_, _, _, _, c)| c).sum();
+    println!(
+        "{} model(s) \u{2022} {} total delegations \u{2022} ${:.4} total cost",
+        rows.len(),
+        total_delegations,
+        total_cost
+    );
+
+    Ok(())
+}
+
 /// `ExportFormat::Csv`: emits a header row followed by one row per
 /// `DelegationEnd` event with columns:
 /// `run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp`
@@ -10176,6 +10281,91 @@ mod tests {
         ];
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_agent_cost_rank(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    // ── print_model_cost_rank ──────────────────────────────────────────────
+
+    fn make_mcr_event(run_id: &str, model: &str, tokens: u64, cost: f64, success: bool, ts: &str) -> String {
+        format!(
+            r#"{{"event_type":"DelegationEnd","run_id":"{run_id}","model":"{model}","tokens_used":{tokens},"cost_usd":{cost},"success":{success},"timestamp":"{ts}"}}"#
+        )
+    }
+
+    #[test]
+    fn print_model_cost_rank_multiple_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.jsonl");
+        // opus: 1 delegation at $0.80 → avg $0.80
+        // haiku: 2 delegations at $0.01 each → avg $0.01
+        let lines = vec![
+            make_mcr_event("r1", "claude-opus-4-6",  8000, 0.80, true,  "2026-02-01T10:00:00Z"),
+            make_mcr_event("r1", "claude-haiku-4-5",  400, 0.01, true,  "2026-02-01T10:01:00Z"),
+            make_mcr_event("r1", "claude-haiku-4-5",  500, 0.01, false, "2026-02-01T10:02:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_model_cost_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_model_cost_rank_empty_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_model_cost_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_model_cost_rank_missing_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.jsonl");
+        let result = print_model_cost_rank(&path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_model_cost_rank_skips_start_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.jsonl");
+        let start = r#"{"event_type":"DelegationStart","run_id":"r1","model":"claude-sonnet-4-6","timestamp":"2026-02-01T10:00:00Z"}"#;
+        let end = make_mcr_event("r1", "claude-sonnet-4-6", 2000, 0.05, true, "2026-02-01T10:01:00Z");
+        std::fs::write(&path, format!("{start}\n{end}\n")).unwrap();
+        let result = print_model_cost_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_model_cost_rank_sorted_by_avg_cost_desc() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.jsonl");
+        // sonnet: $0.10, opus: $0.50, haiku: $0.005 → expected order: opus, sonnet, haiku
+        let lines = vec![
+            make_mcr_event("r1", "claude-sonnet-4-6", 3000, 0.10, true, "2026-02-01T10:00:00Z"),
+            make_mcr_event("r1", "claude-opus-4-6",   9000, 0.50, true, "2026-02-01T10:01:00Z"),
+            make_mcr_event("r1", "claude-haiku-4-5",   200, 0.005, true, "2026-02-01T10:02:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_model_cost_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_model_cost_rank_filters_by_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.jsonl");
+        let lines = vec![
+            make_mcr_event("run-keep", "claude-sonnet-4-6", 2000, 0.04, true,  "2026-02-01T10:00:00Z"),
+            make_mcr_event("run-skip", "claude-opus-4-6",   8000, 0.80, false, "2026-02-01T10:01:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_model_cost_rank(&path, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }
