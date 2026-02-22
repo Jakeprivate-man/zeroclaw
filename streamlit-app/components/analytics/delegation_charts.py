@@ -780,6 +780,97 @@ def render_providers_stats_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_depth_stats_table(run_id: Optional[str] = None) -> None:
+    """Sortable per-depth-level statistics table.
+
+    Mirrors ``zeroclaw delegations depth [--run <id>]`` as an interactive
+    Streamlit dataframe. Rows represent nesting levels: depth 0 is the
+    root agent, depth 1 its direct sub-agents, and so on. Sorted ascending.
+
+    Columns: Depth | Delegations | Ended | Success % | Total Tokens | Total Cost ($)
+
+    Falls back to a synthetic mock example when no log data is present.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` aggregates all runs.
+    """
+    import pandas as pd
+
+    scope = f"[{run_id[:8]}…]" if run_id is not None else "(all runs)"
+    st.markdown(f"#### Depth Stats {scope}")
+
+    parser = DelegationParser()
+    nodes = _collect_all_nodes(parser, run_id)
+
+    if not nodes:
+        st.caption("No delegation data available — showing mock example")
+        rows = [
+            {"Depth": 0, "Delegations": 1, "Ended": 1,
+             "Success %": 100.0, "Total Tokens": 3800, "Total Cost ($)": 0.0134},
+            {"Depth": 1, "Delegations": 3, "Ended": 3,
+             "Success %": 100.0, "Total Tokens": 2400, "Total Cost ($)": 0.0062},
+            {"Depth": 2, "Delegations": 2, "Ended": 2,
+             "Success %": 50.0, "Total Tokens": 1060, "Total Cost ($)": 0.0010},
+        ]
+        df = pd.DataFrame(rows)
+    else:
+        agg: dict = {}
+        for node in nodes:
+            d = node.depth
+            if d not in agg:
+                agg[d] = {
+                    "delegation_count": 0,
+                    "end_count": 0,
+                    "success_count": 0,
+                    "total_tokens": 0,
+                    "total_cost": 0.0,
+                }
+            s = agg[d]
+            s["delegation_count"] += 1
+            if node.is_complete:
+                s["end_count"] += 1
+                if node.success:
+                    s["success_count"] += 1
+            if node.tokens_used is not None:
+                s["total_tokens"] += node.tokens_used
+            if node.cost_usd is not None:
+                s["total_cost"] += node.cost_usd
+
+        rows = []
+        for depth, s in agg.items():
+            success_pct = (
+                round(100.0 * s["success_count"] / s["end_count"], 1)
+                if s["end_count"] > 0
+                else None
+            )
+            rows.append({
+                "Depth": depth,
+                "Delegations": s["delegation_count"],
+                "Ended": s["end_count"],
+                "Success %": success_pct,
+                "Total Tokens": s["total_tokens"],
+                "Total Cost ($)": round(s["total_cost"], 6),
+            })
+
+        # Sort by Depth ascending (root first)
+        rows.sort(key=lambda r: r["Depth"])
+        df = pd.DataFrame(rows)
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Depth": st.column_config.NumberColumn("Depth", format="%d"),
+            "Delegations": st.column_config.NumberColumn("Delegations", format="%d"),
+            "Ended": st.column_config.NumberColumn("Ended", format="%d"),
+            "Success %": st.column_config.NumberColumn("Success %", format="%.1f%%"),
+            "Total Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+            "Total Cost ($)": st.column_config.NumberColumn("Cost ($)", format="$%.4f"),
+        },
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
