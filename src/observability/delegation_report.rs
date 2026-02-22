@@ -6206,6 +6206,115 @@ pub fn print_run_token_rank(log_path: &Path, run_id: Option<&str>) -> Result<()>
     Ok(())
 }
 
+/// Ranks runs by avg duration per delegation (slowest first).
+///
+/// Answers "which run was slowest per call?" — the run-level view of the
+/// duration-rank series alongside agent-, model-, and provider-duration-rank.
+/// Events without `duration_ms` are skipped.
+///
+/// Output columns: `# | run | delegations | avg_dur | avg_cost | ok% | total_dur`
+///
+/// Sorted by avg_dur descending, ties by run_id ascending.
+/// When `run_id` is `Some`, only events from that run are included (single-row result).
+pub fn print_run_duration_rank(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    // run_id → (count, success_count, total_duration_ms, total_cost)
+    let mut run_map: HashMap<String, (usize, usize, u64, f64)> = HashMap::new();
+
+    for ev in &all_events {
+        if ev.get("event_type").and_then(|x| x.as_str()) != Some("DelegationEnd") {
+            continue;
+        }
+        let Some(rid) = ev.get("run_id").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        if let Some(filter) = run_id {
+            if rid != filter {
+                continue;
+            }
+        }
+        let Some(duration_ms) = ev.get("duration_ms").and_then(|x| x.as_u64()) else {
+            continue;
+        };
+        let success = ev
+            .get("success")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+        let cost = ev
+            .get("cost_usd")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0);
+        let entry = run_map.entry(rid.to_owned()).or_insert((0, 0, 0, 0.0));
+        entry.0 += 1;
+        if success {
+            entry.1 += 1;
+        }
+        entry.2 += duration_ms;
+        entry.3 += cost;
+    }
+
+    if run_map.is_empty() {
+        println!("No delegation events found.");
+        return Ok(());
+    }
+
+    let mut rows: Vec<(String, usize, usize, u64, f64)> = run_map
+        .into_iter()
+        .map(|(rid, (c, ok, dur, cost))| (rid, c, ok, dur, cost))
+        .collect();
+    // Sort: avg_dur desc, ties by run_id asc
+    rows.sort_by(|a, b| {
+        let avg_a = if a.1 > 0 { a.3 / a.1 as u64 } else { 0 };
+        let avg_b = if b.1 > 0 { b.3 / b.1 as u64 } else { 0 };
+        avg_b
+            .cmp(&avg_a)
+            .then(a.0.cmp(&b.0))
+    });
+
+    let total_delegations: usize = rows.iter().map(|(_, c, _, _, _)| c).sum();
+    let total_duration_ms: u64 = rows.iter().map(|(_, _, _, dur, _)| dur).sum();
+
+    println!(
+        " {:<3} {:<32} {:>11} {:>9} {:>10} {:>6} {:>12}",
+        "#", "run", "delegations", "avg_dur", "avg_cost", "ok%", "total_dur"
+    );
+    println!("{}", "─".repeat(90));
+    for (i, (rid, count, ok, duration_ms, cost)) in rows.iter().enumerate() {
+        let avg_dur = if *count > 0 { duration_ms / *count as u64 } else { 0 };
+        let avg_cost = if *count > 0 { cost / *count as f64 } else { 0.0 };
+        let ok_pct = if *count > 0 {
+            100.0 * *ok as f64 / *count as f64
+        } else {
+            0.0
+        };
+        println!(
+            " {:<3} {:<32} {:>11} {:>9} {:>10.4} {:>5.1}% {:>12}",
+            i + 1,
+            rid,
+            count,
+            avg_dur,
+            avg_cost,
+            ok_pct,
+            duration_ms,
+        );
+    }
+    println!("{}", "─".repeat(90));
+    println!(
+        "{} run(s) \u{2022} {} total delegations \u{2022} {}ms total duration",
+        rows.len(),
+        total_delegations,
+        total_duration_ms
+    );
+
+    Ok(())
+}
+
 /// `ExportFormat::Csv`: emits a header row followed by one row per
 /// `DelegationEnd` event with columns:
 /// `run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp`
@@ -12602,6 +12711,99 @@ mod tests {
         ];
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_run_token_rank(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    // ── print_run_duration_rank ────────────────────────────────────────────
+
+    fn make_rdr_event(run_id: &str, agent: &str, duration_ms: u64, cost: f64, success: bool, ts: &str) -> String {
+        format!(
+            r#"{{"event_type":"DelegationEnd","run_id":"{run_id}","agent_name":"{agent}","duration_ms":{duration_ms},"cost_usd":{cost},"success":{success},"timestamp":"{ts}"}}"#
+        )
+    }
+
+    #[test]
+    fn print_run_duration_rank_multiple_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        let lines = vec![
+            make_rdr_event("run-alpha", "agent-a", 60_000, 2.00, true,  "2026-02-01T10:00:00Z"),
+            make_rdr_event("run-beta",  "agent-b", 20_000, 0.80, true,  "2026-02-01T10:01:00Z"),
+            make_rdr_event("run-gamma", "agent-c",  3_000, 0.20, false, "2026-02-01T10:02:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_run_duration_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_run_duration_rank_empty_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_run_duration_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_run_duration_rank_missing_log() {
+        let path = std::path::PathBuf::from("/tmp/zeroclaw_rdr_missing_test.jsonl");
+        let result = print_run_duration_rank(&path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_run_duration_rank_skips_start_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        let start = r#"{"event_type":"DelegationStart","run_id":"run-only","agent_name":"agent-a","timestamp":"2026-02-01T10:00:00Z"}"#;
+        std::fs::write(&path, start.to_owned() + "\n").unwrap();
+        let result = print_run_duration_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_run_duration_rank_skips_missing_duration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        // event without duration_ms should be skipped → empty result
+        let no_dur = r#"{"event_type":"DelegationEnd","run_id":"run-a","agent_name":"agent-a","cost_usd":0.10,"success":true,"timestamp":"2026-02-01T10:00:00Z"}"#;
+        std::fs::write(&path, no_dur.to_owned() + "\n").unwrap();
+        let result = print_run_duration_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_run_duration_rank_sorted_by_avg_dur_desc() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        // run-fast: 1 del at 1k ms avg; run-slow: 2 dels at 40k ms avg
+        let lines = vec![
+            make_rdr_event("run-fast", "agent-a",  1_000, 0.10, true, "2026-02-01T10:00:00Z"),
+            make_rdr_event("run-slow", "agent-b", 50_000, 2.00, true, "2026-02-01T10:01:00Z"),
+            make_rdr_event("run-slow", "agent-c", 30_000, 1.00, true, "2026-02-01T10:02:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_run_duration_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_run_duration_rank_filters_by_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        let lines = vec![
+            make_rdr_event("run-keep", "agent-a", 45_000, 1.50, true,  "2026-02-01T10:00:00Z"),
+            make_rdr_event("run-skip", "agent-b",  2_000, 0.05, false, "2026-02-01T10:01:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_run_duration_rank(&path, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }

@@ -1141,6 +1141,12 @@ Examples:
         #[arg(long)]
         run: Option<String>,
     },
+    /// Rank runs by avg duration per delegation (slowest run first)
+    RunDurationRank {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
 Compare per-agent delegation statistics between two runs side-by-side.
@@ -2032,6 +2038,12 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::RunTokenRank { run }) => {
                     observability::delegation_report::print_run_token_rank(
+                        &log_path,
+                        run.as_deref(),
+                    )
+                }
+                Some(DelegationCommands::RunDurationRank { run }) => {
+                    observability::delegation_report::print_run_duration_rank(
                         &log_path,
                         run.as_deref(),
                     )
