@@ -821,6 +821,28 @@ Examples:
         #[arg(long)]
         run: Option<String>,
     },
+    /// Per-calendar-month delegation breakdown, oldest month first
+    #[command(long_about = "\
+Aggregate all completed delegations by UTC calendar month (YYYY-MM),
+sorted oldest-first so the table reads chronologically.  Use `--run` to
+scope to a single run.
+
+The month key is extracted from the first 7 characters of the ISO-8601
+timestamp (e.g. 2026-01 from 2026-01-15T14:30:00Z).
+
+Output columns: month | count | ok% | tokens | cost
+
+The footer shows total months, total delegation count, success count, and
+cumulative cost.
+
+Examples:
+  zeroclaw delegations monthly              # all runs, per-month breakdown
+  zeroclaw delegations monthly --run <id>   # one run only")]
+    Monthly {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
 Compare per-agent delegation statistics between two runs side-by-side.
@@ -1535,6 +1557,9 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::Hourly { run }) => {
                     observability::delegation_report::print_hourly(&log_path, run.as_deref())
+                }
+                Some(DelegationCommands::Monthly { run }) => {
+                    observability::delegation_report::print_monthly(&log_path, run.as_deref())
                 }
                 Some(DelegationCommands::Diff { run_a, run_b }) => {
                     observability::delegation_report::print_diff(
