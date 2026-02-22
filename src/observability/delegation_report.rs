@@ -14,6 +14,7 @@
 //! - [`print_depth`]: per-depth-level breakdown table across all (or one) run.
 //! - [`print_errors`]: list failed delegations with agent, duration, and error message.
 //! - [`print_slow`]: list the N slowest delegations ranked by duration descending.
+//! - [`print_cost`]: per-run cost breakdown table sorted by total cost descending.
 //! - [`get_log_summary`]: programmatic aggregate for `zeroclaw status`.
 //!
 //! All parsing is done via `serde_json::Value` — no new dependencies.
@@ -1415,6 +1416,143 @@ pub fn print_slow(log_path: &Path, run_id: Option<&str>, limit: usize) -> Result
 /// `ExportFormat::Jsonl` (default): emits one raw event JSON object per line,
 /// suitable for piping to `jq` or re-importing into another tool.
 ///
+/// Print a per-run cost breakdown table sorted by total cost descending.
+///
+/// One row per stored run. When `run_id` is `Some`, only that run is shown.
+///
+/// Columns: `#` | `run` (8-char prefix) | `start (UTC)` | `delegations` |
+///          `tokens` | `cost` | `avg/del`
+///
+/// `avg/del` is the average cost per completed delegation for that run,
+/// shown as `—` when no delegation ends were recorded.
+pub fn print_cost(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    // Filter to the requested run before aggregating if a run_id is given.
+    let events: Vec<&Value> = if let Some(rid) = run_id {
+        all_events
+            .iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events.iter().collect()
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    // Aggregate per run: start_time, delegation_count (Start events),
+    // end_count (End events), total_tokens, total_cost.
+    struct CostRow {
+        run_id: String,
+        start_time: Option<DateTime<Utc>>,
+        delegation_count: usize,
+        end_count: usize,
+        total_tokens: u64,
+        total_cost_usd: f64,
+    }
+
+    let mut map: std::collections::HashMap<String, CostRow> = std::collections::HashMap::new();
+
+    for ev in &events {
+        let Some(rid) = ev.get("run_id").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let ts = ev.get("timestamp").and_then(parse_ts);
+        let row = map.entry(rid.to_owned()).or_insert_with(|| CostRow {
+            run_id: rid.to_owned(),
+            start_time: None,
+            delegation_count: 0,
+            end_count: 0,
+            total_tokens: 0,
+            total_cost_usd: 0.0,
+        });
+        if let Some(ts) = ts {
+            if row.start_time.map_or(true, |s| ts < s) {
+                row.start_time = Some(ts);
+            }
+        }
+        match ev.get("event_type").and_then(|x| x.as_str()) {
+            Some("DelegationStart") => row.delegation_count += 1,
+            Some("DelegationEnd") => {
+                row.end_count += 1;
+                if let Some(tok) = ev.get("tokens_used").and_then(|x| x.as_u64()) {
+                    row.total_tokens += tok;
+                }
+                if let Some(cost) = ev.get("cost_usd").and_then(|x| x.as_f64()) {
+                    row.total_cost_usd += cost;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Sort by total cost descending; secondary: newest start first.
+    let mut rows: Vec<CostRow> = map.into_values().collect();
+    rows.sort_by(|a, b| {
+        b.total_cost_usd
+            .partial_cmp(&a.total_cost_usd)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.start_time.cmp(&a.start_time))
+    });
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!("Delegation Cost Breakdown{scope}");
+    println!();
+    println!(
+        "{:>3}  {:<10}  {:<19}  {:>11}  {:>8}  {:>9}  {:>9}",
+        "#", "run", "start (UTC)", "delegations", "tokens", "cost", "avg/del"
+    );
+    println!("{}", "─".repeat(85));
+
+    for (i, row) in rows.iter().enumerate() {
+        let run_prefix: String = row.run_id.chars().take(8).collect();
+        let ts = row
+            .start_time
+            .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| "unknown".to_owned());
+        let tok = if row.total_tokens > 0 {
+            row.total_tokens.to_string()
+        } else {
+            "—".to_owned()
+        };
+        let cost = if row.total_cost_usd > 0.0 {
+            format!("${:.4}", row.total_cost_usd)
+        } else {
+            "—".to_owned()
+        };
+        let avg = if row.end_count > 0 && row.total_cost_usd > 0.0 {
+            format!("${:.4}", row.total_cost_usd / row.end_count as f64)
+        } else {
+            "—".to_owned()
+        };
+        println!(
+            "{:>3}  {:<10}  {:<19}  {:>11}  {:>8}  {:>9}  {:>9}",
+            i + 1,
+            run_prefix,
+            ts,
+            row.delegation_count,
+            tok,
+            cost,
+            avg,
+        );
+    }
+
+    println!("{}", "─".repeat(85));
+    let total_cost: f64 = rows.iter().map(|r| r.total_cost_usd).sum();
+    println!("{} run(s) • total cost: ${total_cost:.4}", rows.len());
+    Ok(())
+}
+
 /// `ExportFormat::Csv`: emits a header row followed by one row per
 /// `DelegationEnd` event with columns:
 /// `run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp`
@@ -3626,5 +3764,165 @@ mod tests {
         let result = print_slow(&path, Some("run-keep"), 10);
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
+    }
+
+    // ── print_cost tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn print_cost_on_missing_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_cost_missing.jsonl");
+        let _ = std::fs::remove_file(&path);
+        assert!(print_cost(&path, None).is_ok());
+    }
+
+    #[test]
+    fn print_cost_on_empty_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_cost_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        assert!(print_cost(&path, None).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_cost_with_single_run_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_cost_single.jsonl");
+        let mut lines = Vec::new();
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                500,
+                0.001,
+                true,
+            ))
+            .unwrap(),
+        );
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_cost(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_cost_sorts_by_cost_descending() {
+        let path = std::env::temp_dir().join("zeroclaw_test_cost_sort.jsonl");
+        // run-cheap: $0.001, run-expensive: $0.010 — expensive should appear first.
+        let mut lines = Vec::new();
+        lines.push(
+            serde_json::to_string(&make_start("run-cheap", "main", 0, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-cheap",
+                "main",
+                0,
+                "2026-01-01T10:00:01Z",
+                100,
+                0.001,
+                true,
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start(
+                "run-expensive",
+                "main",
+                0,
+                "2026-01-02T10:00:00Z",
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-expensive",
+                "main",
+                0,
+                "2026-01-02T10:00:05Z",
+                1000,
+                0.010,
+                true,
+            ))
+            .unwrap(),
+        );
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert!(print_cost(&path, None).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_cost_filters_by_run() {
+        let path = std::env::temp_dir().join("zeroclaw_test_cost_filter.jsonl");
+        let mut lines = Vec::new();
+        for (run, ts_start, ts_end, cost) in &[
+            (
+                "run-a",
+                "2026-01-01T10:00:00Z",
+                "2026-01-01T10:00:01Z",
+                0.005f64,
+            ),
+            (
+                "run-b",
+                "2026-01-02T10:00:00Z",
+                "2026-01-02T10:00:01Z",
+                0.002f64,
+            ),
+        ] {
+            lines.push(serde_json::to_string(&make_start(run, "main", 0, ts_start)).unwrap());
+            lines.push(
+                serde_json::to_string(&make_end(run, "main", 0, ts_end, 200, *cost, true)).unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_cost(&path, Some("run-a"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_cost_shows_avg_per_delegation() {
+        let path = std::env::temp_dir().join("zeroclaw_test_cost_avg.jsonl");
+        // Two DelegationEnd events for one run — avg should be half the total.
+        let mut lines = Vec::new();
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "agent1", 0, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "agent1",
+                0,
+                "2026-01-01T10:00:01Z",
+                200,
+                0.004,
+                true,
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "agent2", 1, "2026-01-01T10:00:02Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "agent2",
+                1,
+                "2026-01-01T10:00:03Z",
+                200,
+                0.004,
+                true,
+            ))
+            .unwrap(),
+        );
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert!(print_cost(&path, None).is_ok());
+        let _ = std::fs::remove_file(&path);
     }
 }

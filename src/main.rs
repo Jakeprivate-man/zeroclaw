@@ -413,7 +413,9 @@ Examples:
   zeroclaw delegations errors --run <id>  # failures for one run
   zeroclaw delegations slow          # top 10 slowest delegations across all runs
   zeroclaw delegations slow --limit 5  # top 5 slowest
-  zeroclaw delegations slow --run <id>  # slowest within one run")]
+  zeroclaw delegations slow --run <id>  # slowest within one run
+  zeroclaw delegations cost          # per-run cost breakdown, most expensive first
+  zeroclaw delegations cost --run <id>  # cost breakdown for one run")]
     Delegations {
         #[command(subcommand)]
         delegation_command: Option<DelegationCommands>,
@@ -589,6 +591,24 @@ Examples:
         /// Number of rows to display (default: 10)
         #[arg(long, default_value_t = 10)]
         limit: usize,
+    },
+    /// Show per-run cost breakdown sorted by total cost descending
+    #[command(long_about = "\
+Show a per-run cost breakdown table, sorted by total cost descending (most expensive first).
+
+One row per stored run. Use `--run` to show only a single run. For each run the table
+shows the 8-character run prefix, start timestamp, total delegations, tokens, cost, and
+the average cost per completed delegation.
+
+Output columns: # | run (prefix) | start (UTC) | delegations | tokens | cost | avg/del
+
+Examples:
+  zeroclaw delegations cost              # all runs, most expensive first
+  zeroclaw delegations cost --run <id>   # cost breakdown for one run")]
+    Cost {
+        /// Scope to a specific run ID (default: show all runs)
+        #[arg(long)]
+        run: Option<String>,
     },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
@@ -1266,6 +1286,9 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::Slow { run, limit }) => {
                     observability::delegation_report::print_slow(&log_path, run.as_deref(), limit)
+                }
+                Some(DelegationCommands::Cost { run }) => {
+                    observability::delegation_report::print_cost(&log_path, run.as_deref())
                 }
                 Some(DelegationCommands::Diff { run_a, run_b }) => {
                     observability::delegation_report::print_diff(
