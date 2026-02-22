@@ -312,6 +312,9 @@ def render() -> None:
         # Provider-tier breakdown table (scoped to selected run when set)
         delegation_charts.render_provider_tier_table(run_id=selected_run_id)
 
+        # Time-of-day breakdown table (scoped to selected run when set)
+        delegation_charts.render_time_of_day_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
