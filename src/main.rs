@@ -843,6 +843,28 @@ Examples:
         #[arg(long)]
         run: Option<String>,
     },
+    /// Per-calendar-quarter delegation breakdown, oldest quarter first
+    #[command(long_about = "\
+Aggregate all completed delegations by UTC calendar quarter (YYYY-QN),
+sorted oldest-first so the table reads chronologically.  Use `--run` to
+scope to a single run.
+
+Quarter boundaries are derived from the month in the ISO-8601 timestamp:
+  Jan–Mar → Q1 · Apr–Jun → Q2 · Jul–Sep → Q3 · Oct–Dec → Q4
+
+Output columns: quarter | count | ok% | tokens | cost
+
+The footer shows total quarters, total delegation count, success count, and
+cumulative cost.
+
+Examples:
+  zeroclaw delegations quarterly              # all runs, per-quarter breakdown
+  zeroclaw delegations quarterly --run <id>   # one run only")]
+    Quarterly {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
 Compare per-agent delegation statistics between two runs side-by-side.
@@ -1560,6 +1582,9 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::Monthly { run }) => {
                     observability::delegation_report::print_monthly(&log_path, run.as_deref())
+                }
+                Some(DelegationCommands::Quarterly { run }) => {
+                    observability::delegation_report::print_quarterly(&log_path, run.as_deref())
                 }
                 Some(DelegationCommands::Diff { run_a, run_b }) => {
                     observability::delegation_report::print_diff(
