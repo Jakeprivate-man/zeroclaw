@@ -426,7 +426,8 @@ Examples:
   zeroclaw delegations model claude-sonnet-4              # history for model
   zeroclaw delegations model claude-sonnet-4 --run <id>   # history within one run
   zeroclaw delegations provider anthropic             # history for provider
-  zeroclaw delegations provider anthropic --run <id>  # history within one run")]
+  zeroclaw delegations provider anthropic --run <id>  # history within one run
+  zeroclaw delegations run <id>                        # full chronological report for one run")]
     Delegations {
         #[command(subcommand)]
         delegation_command: Option<DelegationCommands>,
@@ -728,6 +729,26 @@ Examples:
         /// Scope to a specific run ID (default: show all runs)
         #[arg(long)]
         run: Option<String>,
+    },
+    /// Show all completed delegations for a specific run in chronological order
+    #[command(long_about = "\
+Show all completed delegations for a specific run in chronological order.
+
+Filters `DelegationEnd` events whose `run_id` matches <id> (exact match).
+Results are sorted oldest-first so you can trace the sequence of delegations
+in the order they completed.  Unlike `recent --run`, there is no row limit.
+
+Output columns: # | agent | depth | duration | tokens | cost | ok | finished (UTC)
+
+The footer shows total completions, success count, cumulative tokens, and
+cumulative cost for the run.
+
+Examples:
+  zeroclaw delegations run f47ac10b-1234-5678-abcd-ef0123456789  # full run ID
+  zeroclaw delegations run f47ac10b                               # unique prefix")]
+    Run {
+        /// Run ID to report on (exact match)
+        id: String,
     },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
@@ -1427,6 +1448,9 @@ async fn main() -> Result<()> {
                         &name,
                         run.as_deref(),
                     )
+                }
+                Some(DelegationCommands::Run { id }) => {
+                    observability::delegation_report::print_run(&log_path, &id)
                 }
                 Some(DelegationCommands::Diff { run_a, run_b }) => {
                     observability::delegation_report::print_diff(
