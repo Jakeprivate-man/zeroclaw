@@ -288,6 +288,9 @@ def render() -> None:
         # Agent × provider cross-product breakdown table (scoped to selected run when set)
         delegation_charts.render_agent_provider_table(run_id=selected_run_id)
 
+        # Duration bucket histogram table (scoped to selected run when set)
+        delegation_charts.render_duration_bucket_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
@@ -483,6 +486,14 @@ def render() -> None:
               combinations, total delegations, and cumulative cost; mirrors
               `zeroclaw delegations agent-provider`; scoped by the shared run selector;
               shows a mock example when no real log data is available
+            - **Duration Bucket table** — groups completed delegations into five
+              fixed-width latency buckets (&lt;500ms, 500ms–2s, 2s–10s, 10s–60s, &gt;60s);
+              columns show bucket label, count, success percentage, cumulative tokens,
+              and cumulative cost; buckets are shown in fastest-to-slowest order and
+              empty buckets are omitted; a caption line below summarises populated
+              bucket count, total delegations, total successes, and cumulative cost;
+              mirrors `zeroclaw delegations duration-bucket`; scoped by the shared run
+              selector; shows a mock example when no real log data is available
             - **Agent Leaderboard** — horizontal bar chart ranking all agents by
               cumulative tokens or cost across every stored run; rank-by and top-N
               controls mirror `zeroclaw delegations top`; falls back to a mock
