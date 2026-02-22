@@ -2489,6 +2489,147 @@ def render_hourly_breakdown_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_monthly_breakdown_table(run_id: Optional[str] = None) -> None:
+    """Per-calendar-month delegation breakdown table.
+
+    Mirrors ``zeroclaw delegations monthly [--run <id>]`` as a Streamlit
+    dataframe. Groups all completed delegations by UTC calendar month
+    (YYYY-MM) and shows aggregate statistics per month, sorted oldest
+    month first.
+
+    The month key is extracted from the first 7 characters of the ISO-8601
+    timestamp (e.g. ``2026-01`` from ``2026-01-15T14:30:00Z``). Lexicographic
+    ordering of ``YYYY-MM`` strings is identical to chronological order so no
+    additional sort step is required.
+
+    Like the daily and hourly tables, this is an aggregate table with no
+    additional input control — scope comes from the shared run selector.
+
+    Columns: Month | Count | Ok% | Tokens | Cost ($)
+
+    A caption below the table summarises total months, total delegations,
+    total successes, and cumulative cost — mirroring the CLI footer line.
+
+    Falls back to a synthetic mock example when no real data is present.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` aggregates all runs.
+    """
+    import pandas as pd
+
+    scope = f"[{run_id[:8]}…]" if run_id is not None else "(all runs)"
+    st.markdown(f"#### Monthly Delegation Breakdown {scope}")
+
+    parser = DelegationParser()
+    events = parser._read_events(run_id)
+
+    if not events:
+        st.caption("No delegation data available — showing mock example")
+        rows = [
+            {
+                "Month": "2025-12",
+                "Count": 31,
+                "Ok%": "96.8%",
+                "Tokens": 18_600,
+                "Cost ($)": "$0.0558",
+            },
+            {
+                "Month": "2026-01",
+                "Count": 87,
+                "Ok%": "97.7%",
+                "Tokens": 52_200,
+                "Cost ($)": "$0.1566",
+            },
+            {
+                "Month": "2026-02",
+                "Count": 45,
+                "Ok%": "100.0%",
+                "Tokens": 27_000,
+                "Cost ($)": "$0.0810",
+            },
+        ]
+        df = pd.DataFrame(rows)
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Month": st.column_config.TextColumn("Month", width="small"),
+                "Count": st.column_config.NumberColumn("Count", format="%d"),
+                "Ok%": st.column_config.TextColumn("Ok%", width="small"),
+                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
+            },
+        )
+        st.caption("3 month(s) • 163 total delegations • 159 succeeded • $0.2934 total cost (mock)")
+        return
+
+    # Collect completed delegations, group by UTC calendar month.
+    month_stats: dict[str, list] = {}
+    # month_stats[month_str] = [count, success_count, tokens, cost]
+    for ev in events:
+        if ev.get("event_type") != "DelegationEnd":
+            continue
+        ts = ev.get("timestamp", "")
+        if len(ts) < 7:
+            continue
+        month_str = ts[:7]
+        ok = bool(ev.get("success", False))
+        tokens = int(ev.get("tokens_used") or 0)
+        cost = float(ev.get("cost_usd") or 0.0)
+        if month_str not in month_stats:
+            month_stats[month_str] = [0, 0, 0, 0.0]
+        month_stats[month_str][0] += 1
+        if ok:
+            month_stats[month_str][1] += 1
+        month_stats[month_str][2] += tokens
+        month_stats[month_str][3] += cost
+
+    if not month_stats:
+        st.caption("No completed delegations found in the selected scope.")
+        return
+
+    # Sort oldest-first: YYYY-MM strings sort correctly lexicographically.
+    sorted_months = sorted(month_stats.keys())
+
+    rows = []
+    total_delegations = 0
+    total_success = 0
+    total_cost = 0.0
+    for month_str in sorted_months:
+        count, success_count, tokens, cost = month_stats[month_str]
+        ok_pct = f"{100.0 * success_count / count:.1f}%" if count > 0 else "—"
+        rows.append({
+            "Month": month_str,
+            "Count": count,
+            "Ok%": ok_pct,
+            "Tokens": tokens,
+            "Cost ($)": f"${cost:.4f}",
+        })
+        total_delegations += count
+        total_success += success_count
+        total_cost += cost
+
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Month": st.column_config.TextColumn("Month", width="small"),
+            "Count": st.column_config.NumberColumn("Count", format="%d"),
+            "Ok%": st.column_config.TextColumn("Ok%", width="small"),
+            "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+            "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
+        },
+    )
+    n_months = len(sorted_months)
+    st.caption(
+        f"{n_months} month(s)  •  {total_delegations} total delegations  "
+        f"•  {total_success} succeeded  •  ${total_cost:.4f} total cost"
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
