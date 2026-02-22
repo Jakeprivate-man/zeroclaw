@@ -270,6 +270,9 @@ def render() -> None:
         # Daily breakdown table — per-calendar-day aggregation (scoped to selected run when set)
         delegation_charts.render_daily_breakdown_table(run_id=selected_run_id)
 
+        # Hourly breakdown table — per-UTC-hour aggregation (scoped to selected run when set)
+        delegation_charts.render_hourly_breakdown_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
@@ -421,6 +424,14 @@ def render() -> None:
               cumulative cost; mirrors `zeroclaw delegations daily`; scoped by the
               shared run selector; shows a mock example when no real log data is
               available
+            - **Hourly Breakdown table** — groups all completed delegations by UTC
+              hour-of-day (00–23, lowest first); columns show hour bucket, delegation
+              count, success percentage, cumulative tokens, and cumulative cost; events
+              from different dates with the same hour merge into one bucket to reveal
+              peak-activity windows; a caption line below summarises active hours,
+              total delegations, successes, and cumulative cost; mirrors
+              `zeroclaw delegations hourly`; scoped by the shared run selector; shows
+              a mock example when no real log data is available
             - **Agent Leaderboard** — horizontal bar chart ranking all agents by
               cumulative tokens or cost across every stored run; rank-by and top-N
               controls mirror `zeroclaw delegations top`; falls back to a mock
