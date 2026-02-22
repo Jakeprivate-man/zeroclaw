@@ -234,6 +234,9 @@ def render() -> None:
         # Per-provider stats table (scoped to selected run when set)
         delegation_charts.render_providers_stats_table(run_id=selected_run_id)
 
+        # Per-depth stats table (scoped to selected run when set)
+        delegation_charts.render_depth_stats_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
@@ -297,6 +300,12 @@ def render() -> None:
               total tokens, and total cost; mirrors `zeroclaw delegations providers`;
               scoped by the shared run selector; useful for seeing cost distribution
               across AI providers at a glance
+            - **Depth Stats table** — sortable dataframe with one row per nesting level
+              (depth 0 = root agent, depth 1 = direct sub-agents, etc.): delegation
+              count, ended count, success %, total tokens, and total cost; sorted
+              ascending by depth; mirrors `zeroclaw delegations depth`; scoped by the
+              shared run selector; useful for understanding how deeply workflows nest
+              and where token spend concentrates
             - **Agent Leaderboard** — horizontal bar chart ranking all agents by
               cumulative tokens or cost across every stored run; rank-by and top-N
               controls mirror `zeroclaw delegations top`; falls back to a mock
