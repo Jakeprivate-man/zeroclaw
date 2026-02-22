@@ -3417,6 +3417,247 @@ pub fn print_agent_provider(log_path: &Path, run_id: Option<&str>) -> Result<()>
     Ok(())
 }
 
+/// Groups `DelegationEnd` events into five duration buckets and shows
+/// aggregate statistics per bucket, ordered fastest-first.
+///
+/// Bucket boundaries (milliseconds):
+///   instant: 0–499 · fast: 500–1 999 · normal: 2 000–9 999
+///   slow: 10 000–59 999 · very slow: ≥ 60 000
+///
+/// Empty buckets are omitted.  Use `run_id` to scope to a single run;
+/// `None` aggregates across every stored run.
+///
+/// Output columns: bucket | count | ok% | tokens | cost
+pub fn print_duration_bucket(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    const LABELS: [&str; 5] = ["<500ms", "500ms–2s", "2s–10s", "10s–60s", ">60s"];
+
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    let events: Vec<&Value> = if let Some(rid) = run_id {
+        all_events
+            .iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events.iter().collect()
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    // buckets[i] = (count, success_count, tokens, cost)
+    let mut buckets: [(usize, usize, u64, f64); 5] = [(0, 0, 0, 0.0); 5];
+
+    for ev in &events {
+        if ev.get("event_type").and_then(|x| x.as_str()) != Some("DelegationEnd") {
+            continue;
+        }
+        let duration_ms = ev
+            .get("duration_ms")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        let idx = match duration_ms {
+            0..=499 => 0,
+            500..=1999 => 1,
+            2000..=9999 => 2,
+            10000..=59999 => 3,
+            _ => 4,
+        };
+        let ok = ev.get("success").and_then(|x| x.as_bool()).unwrap_or(false);
+        let tokens = ev
+            .get("tokens_used")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        let cost = ev
+            .get("cost_usd")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0);
+        buckets[idx].0 += 1;
+        if ok {
+            buckets[idx].1 += 1;
+        }
+        buckets[idx].2 += tokens;
+        buckets[idx].3 += cost;
+    }
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!("Duration Bucket Breakdown{scope}");
+    println!();
+    println!(
+        "{:<10}  {:>7}  {:>8}  {:>10}  {:>10}",
+        "bucket", "count", "ok%", "tokens", "cost"
+    );
+    println!("{}", "─".repeat(55));
+
+    let mut total_count: usize = 0;
+    let mut total_success: usize = 0;
+    let mut total_tokens: u64 = 0;
+    let mut total_cost: f64 = 0.0;
+    let mut populated: usize = 0;
+
+    for (i, (count, success_count, tokens, cost)) in buckets.iter().enumerate() {
+        if *count == 0 {
+            continue;
+        }
+        populated += 1;
+        let ok_pct = format!("{:.1}%", 100.0 * (*success_count as f64) / (*count as f64));
+        let tok_str = if *tokens > 0 {
+            tokens.to_string()
+        } else {
+            "\u{2014}".to_owned()
+        };
+        let cost_str = if *cost > 0.0 {
+            format!("${cost:.4}")
+        } else {
+            "\u{2014}".to_owned()
+        };
+        println!(
+            "{:<10}  {:>7}  {:>8}  {:>10}  {:>10}",
+            LABELS[i], count, ok_pct, tok_str, cost_str,
+        );
+        total_count += count;
+        total_success += success_count;
+        total_tokens += tokens;
+        total_cost += cost;
+    }
+
+    println!("{}", "─".repeat(55));
+    println!(
+        "{}  bucket(s) populated  \u{2022}  {} total delegations  \u{2022}  {} succeeded  \u{2022}  ${:.4} total cost",
+        populated,
+        total_count,
+        total_success,
+        total_cost,
+    );
+    Ok(())
+}
+
+/// Histogram of `DelegationEnd` events bucketed by `tokens_used`.
+///
+/// Five fixed-width buckets (in smallest-to-largest order):
+/// `0–99`, `100–999`, `1k–9.9k`, `10k–99.9k`, `100k+`.
+/// Empty buckets are omitted from the output.
+///
+/// Mirrors `zeroclaw delegations token-bucket`.
+pub fn print_token_bucket(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    const LABELS: [&str; 5] = ["0\u{2013}99", "100\u{2013}999", "1k\u{2013}9.9k", "10k\u{2013}99.9k", "100k+"];
+
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    let events: Vec<&Value> = if let Some(rid) = run_id {
+        all_events
+            .iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events.iter().collect()
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    // buckets[i] = (count, success_count, tokens, cost)
+    let mut buckets: [(usize, usize, u64, f64); 5] = [(0, 0, 0, 0.0); 5];
+
+    for ev in &events {
+        if ev.get("event_type").and_then(|x| x.as_str()) != Some("DelegationEnd") {
+            continue;
+        }
+        let tokens_used = ev
+            .get("tokens_used")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        let idx = match tokens_used {
+            0..=99 => 0,
+            100..=999 => 1,
+            1000..=9999 => 2,
+            10000..=99999 => 3,
+            _ => 4,
+        };
+        let ok = ev.get("success").and_then(|x| x.as_bool()).unwrap_or(false);
+        let tokens = tokens_used;
+        let cost = ev
+            .get("cost_usd")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0);
+        buckets[idx].0 += 1;
+        if ok {
+            buckets[idx].1 += 1;
+        }
+        buckets[idx].2 += tokens;
+        buckets[idx].3 += cost;
+    }
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!("Token Bucket Breakdown{scope}");
+    println!();
+    println!(
+        "{:<12}  {:>7}  {:>8}  {:>10}  {:>10}",
+        "bucket", "count", "ok%", "tokens", "cost"
+    );
+    println!("{}", "\u{2500}".repeat(57));
+
+    let mut total_count: usize = 0;
+    let mut total_success: usize = 0;
+    let mut total_tokens: u64 = 0;
+    let mut total_cost: f64 = 0.0;
+    let mut populated: usize = 0;
+
+    for (i, (count, success_count, tokens, cost)) in buckets.iter().enumerate() {
+        if *count == 0 {
+            continue;
+        }
+        populated += 1;
+        let ok_pct = format!("{:.1}%", 100.0 * (*success_count as f64) / (*count as f64));
+        let tok_str = if *tokens > 0 {
+            tokens.to_string()
+        } else {
+            "\u{2014}".to_owned()
+        };
+        let cost_str = if *cost > 0.0 {
+            format!("${cost:.4}")
+        } else {
+            "\u{2014}".to_owned()
+        };
+        println!(
+            "{:<12}  {:>7}  {:>8}  {:>10}  {:>10}",
+            LABELS[i], count, ok_pct, tok_str, cost_str,
+        );
+        total_count += count;
+        total_success += success_count;
+        total_tokens += tokens;
+        total_cost += cost;
+    }
+
+    println!("{}", "\u{2500}".repeat(57));
+    println!(
+        "{}  bucket(s) populated  \u{2022}  {} total delegations  \u{2022}  {} succeeded  \u{2022}  ${:.4} total cost",
+        populated,
+        total_count,
+        total_success,
+        total_cost,
+    );
+    Ok(())
+}
+
 /// `ExportFormat::Csv`: emits a header row followed by one row per
 /// `DelegationEnd` event with columns:
 /// `run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp`
@@ -7291,6 +7532,218 @@ mod tests {
         }
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_agent_provider(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_duration_bucket_missing_log() {
+        let path =
+            std::path::PathBuf::from("/tmp/zeroclaw_no_such_file_durbucket.jsonl");
+        let result = print_duration_bucket(&path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_duration_bucket_empty_log() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_dur_bucket_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_duration_bucket(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_duration_bucket_no_ends() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_dur_bucket_noends.jsonl");
+        let ev = serde_json::json!({
+            "event_type": "DelegationStart",
+            "run_id": "run-1",
+            "agent_name": "researcher",
+            "timestamp": "2026-02-01T10:00:00Z",
+        });
+        std::fs::write(&path, serde_json::to_string(&ev).unwrap() + "\n").unwrap();
+        let result = print_duration_bucket(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_duration_bucket_groups_by_bucket() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_dur_bucket_groups.jsonl");
+        let mut lines = Vec::new();
+        for duration_ms in &[200u64, 1000u64, 5000u64] {
+            let ev = serde_json::json!({
+                "event_type": "DelegationEnd",
+                "run_id": "run-1",
+                "agent_name": "researcher",
+                "duration_ms": duration_ms,
+                "tokens_used": 100u64,
+                "cost_usd": 0.001f64,
+                "success": true,
+                "timestamp": "2026-02-01T10:00:00Z",
+            });
+            lines.push(serde_json::to_string(&ev).unwrap());
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_duration_bucket(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_duration_bucket_fastest_first() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_dur_bucket_order.jsonl");
+        let mut lines = Vec::new();
+        for duration_ms in &[70000u64, 100u64] {
+            let ev = serde_json::json!({
+                "event_type": "DelegationEnd",
+                "run_id": "run-1",
+                "agent_name": "researcher",
+                "duration_ms": duration_ms,
+                "tokens_used": 100u64,
+                "cost_usd": 0.001f64,
+                "success": true,
+                "timestamp": "2026-02-01T10:00:00Z",
+            });
+            lines.push(serde_json::to_string(&ev).unwrap());
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_duration_bucket(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_duration_bucket_filters_by_run() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_dur_bucket_runfilter.jsonl");
+        let mut lines = Vec::new();
+        for (run, duration_ms) in &[("run-keep", 500u64), ("run-skip", 1000u64)] {
+            let ev = serde_json::json!({
+                "event_type": "DelegationEnd",
+                "run_id": run,
+                "agent_name": "researcher",
+                "duration_ms": duration_ms,
+                "tokens_used": 100u64,
+                "cost_usd": 0.001f64,
+                "success": true,
+                "timestamp": "2026-02-01T10:00:00Z",
+            });
+            lines.push(serde_json::to_string(&ev).unwrap());
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_duration_bucket(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_token_bucket_missing_log() {
+        let path =
+            std::path::PathBuf::from("/tmp/zeroclaw_no_such_file_tokbucket.jsonl");
+        let result = print_token_bucket(&path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_token_bucket_empty_log() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_tok_bucket_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_token_bucket(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_token_bucket_no_ends() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_tok_bucket_noends.jsonl");
+        let ev = serde_json::json!({
+            "event_type": "DelegationStart",
+            "run_id": "run-1",
+            "agent_name": "researcher",
+            "timestamp": "2026-02-01T10:00:00Z",
+        });
+        std::fs::write(&path, serde_json::to_string(&ev).unwrap() + "\n").unwrap();
+        let result = print_token_bucket(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_token_bucket_groups_by_bucket() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_tok_bucket_groups.jsonl");
+        let mut lines = Vec::new();
+        for tokens_used in &[50u64, 500u64, 5000u64] {
+            let ev = serde_json::json!({
+                "event_type": "DelegationEnd",
+                "run_id": "run-1",
+                "agent_name": "researcher",
+                "duration_ms": 1000u64,
+                "tokens_used": tokens_used,
+                "cost_usd": 0.001f64,
+                "success": true,
+                "timestamp": "2026-02-01T10:00:00Z",
+            });
+            lines.push(serde_json::to_string(&ev).unwrap());
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_token_bucket(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_token_bucket_smallest_first() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_tok_bucket_order.jsonl");
+        let mut lines = Vec::new();
+        for tokens_used in &[200_000u64, 30u64] {
+            let ev = serde_json::json!({
+                "event_type": "DelegationEnd",
+                "run_id": "run-1",
+                "agent_name": "researcher",
+                "duration_ms": 1000u64,
+                "tokens_used": tokens_used,
+                "cost_usd": 0.001f64,
+                "success": true,
+                "timestamp": "2026-02-01T10:00:00Z",
+            });
+            lines.push(serde_json::to_string(&ev).unwrap());
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_token_bucket(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_token_bucket_filters_by_run() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_tok_bucket_runfilter.jsonl");
+        let mut lines = Vec::new();
+        for (run, tokens_used) in &[("run-keep", 500u64), ("run-skip", 50000u64)] {
+            let ev = serde_json::json!({
+                "event_type": "DelegationEnd",
+                "run_id": run,
+                "agent_name": "researcher",
+                "duration_ms": 1000u64,
+                "tokens_used": tokens_used,
+                "cost_usd": 0.001f64,
+                "success": true,
+                "timestamp": "2026-02-01T10:00:00Z",
+            });
+            lines.push(serde_json::to_string(&ev).unwrap());
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_token_bucket(&path, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }

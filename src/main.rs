@@ -922,6 +922,34 @@ Examples:
         #[arg(long)]
         run: Option<String>,
     },
+    /// Delegation count, ok%, tokens, and cost grouped by duration bucket
+    #[command(long_about = "\
+Aggregate all completed delegations into five duration buckets and show
+statistics per bucket, ordered fastest-first.  Empty buckets are omitted.
+
+Bucket boundaries:
+  instant  <500 ms
+  fast     500 ms – 2 s
+  normal   2 s – 10 s
+  slow     10 s – 60 s
+  very slow  ≥ 60 s
+
+Output columns: bucket | count | ok% | tokens | cost
+
+Examples:
+  zeroclaw delegations duration-bucket              # all runs
+  zeroclaw delegations duration-bucket --run <id>   # one run only")]
+    DurationBucket {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
+    /// Histogram of delegations grouped by token-usage bucket (0–99, 100–999, 1k–9.9k, 10k–99.9k, 100k+)
+    TokenBucket {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
 Compare per-agent delegation statistics between two runs side-by-side.
@@ -1657,6 +1685,18 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::AgentProvider { run }) => {
                     observability::delegation_report::print_agent_provider(
+                        &log_path,
+                        run.as_deref(),
+                    )
+                }
+                Some(DelegationCommands::DurationBucket { run }) => {
+                    observability::delegation_report::print_duration_bucket(
+                        &log_path,
+                        run.as_deref(),
+                    )
+                }
+                Some(DelegationCommands::TokenBucket { run }) => {
+                    observability::delegation_report::print_token_bucket(
                         &log_path,
                         run.as_deref(),
                     )
