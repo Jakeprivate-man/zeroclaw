@@ -1178,6 +1178,116 @@ def render_cost_breakdown_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_recent_table(run_id: Optional[str] = None) -> None:
+    """Most-recently-completed delegations table, newest first.
+
+    Mirrors ``zeroclaw delegations recent [--run <id>] [--limit N]`` as an
+    interactive Streamlit dataframe. Rows represent completed delegations
+    (``DelegationEnd`` events), sorted by finish timestamp descending so the
+    most recent delegation appears first. A number-input lets the user control
+    how many rows to display (default: 10, matching the CLI default).
+
+    Columns: # | Run | Agent | Depth | Duration | Tokens | Cost ($) | Finished
+
+    Falls back to a synthetic mock example when no real data is present.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` aggregates all runs.
+    """
+    import pandas as pd
+
+    scope = f"[{run_id[:8]}…]" if run_id is not None else "(all runs)"
+    st.markdown(f"#### Most Recent Delegations {scope}")
+
+    limit = int(st.number_input(
+        "Show most recent N",
+        min_value=1,
+        max_value=200,
+        value=10,
+        step=1,
+        key="recent_table_limit",
+        help="Number of most recently completed delegations to display (mirrors --limit in CLI)",
+    ))
+
+    parser = DelegationParser()
+    nodes = _collect_all_nodes(parser, run_id)
+    completed = [n for n in nodes if n.is_complete]
+
+    if not completed:
+        st.caption("No completed delegation data — showing mock example")
+        rows = [
+            {
+                "#": 1,
+                "Run": "abc12345",
+                "Agent": "research",
+                "Depth": 1,
+                "Duration": "4.51s",
+                "Tokens": 2400,
+                "Cost ($)": 0.0072,
+                "Finished": "2026-02-22 10:30:50",
+            },
+            {
+                "#": 2,
+                "Run": "abc12345",
+                "Agent": "main",
+                "Depth": 0,
+                "Duration": "5.23s",
+                "Tokens": 3800,
+                "Cost ($)": 0.0114,
+                "Finished": "2026-02-22 10:30:45",
+            },
+        ]
+        df = pd.DataFrame(rows[:limit])
+    else:
+        def _fmt_ms(ms: Optional[int]) -> str:
+            if ms is None:
+                return "—"
+            return f"{ms}ms" if ms < 1000 else f"{ms / 1000:.2f}s"
+
+        # Sort newest-finish first; fall back to start_time when end_time is absent.
+        completed_sorted = sorted(
+            completed,
+            key=lambda n: (n.end_time or n.start_time or datetime.min),
+            reverse=True,
+        )
+
+        rows = []
+        for i, node in enumerate(completed_sorted[:limit], start=1):
+            run_prefix = (node.run_id or "")[:8]
+            finished_str = (
+                node.end_time.strftime("%Y-%m-%d %H:%M:%S")
+                if node.end_time is not None
+                else "—"
+            )
+            rows.append({
+                "#": i,
+                "Run": run_prefix,
+                "Agent": node.agent_name,
+                "Depth": node.depth,
+                "Duration": _fmt_ms(node.duration_ms),
+                "Tokens": node.tokens_used,
+                "Cost ($)": round(node.cost_usd, 6) if node.cost_usd is not None else None,
+                "Finished": finished_str,
+            })
+        df = pd.DataFrame(rows)
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+            "Run": st.column_config.TextColumn("Run", width="small"),
+            "Agent": st.column_config.TextColumn("Agent", width="medium"),
+            "Depth": st.column_config.NumberColumn("Depth", format="%d", width="small"),
+            "Duration": st.column_config.TextColumn("Duration", width="small"),
+            "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+            "Cost ($)": st.column_config.NumberColumn("Cost ($)", format="$%.4f"),
+            "Finished": st.column_config.TextColumn("Finished"),
+        },
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
