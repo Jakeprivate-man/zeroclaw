@@ -2809,6 +2809,130 @@ pub fn print_hourly(log_path: &Path, run_id: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Aggregate completed delegations by UTC calendar month (YYYY-MM) and print a
+/// breakdown table, sorted oldest-month first.
+///
+/// Only `DelegationEnd` events are counted.  The month key is extracted from
+/// the first 7 characters of the ISO-8601 timestamp (e.g.
+/// `"2026-01-15T14:30:00Z"` → `"2026-01"`).  Events with a timestamp shorter
+/// than 7 chars are skipped.
+///
+/// Use `run_id` to scope to a single process invocation; `None` aggregates
+/// across every stored run.
+///
+/// Output columns: month | count | ok% | tokens | cost
+pub fn print_monthly(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    let events: Vec<&Value> = if let Some(rid) = run_id {
+        all_events
+            .iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events.iter().collect()
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    // Aggregate DelegationEnd events by UTC month (first 7 chars of timestamp).
+    let mut map: std::collections::BTreeMap<String, (usize, usize, u64, f64)> =
+        std::collections::BTreeMap::new();
+
+    for ev in &events {
+        if ev.get("event_type").and_then(|x| x.as_str()) != Some("DelegationEnd") {
+            continue;
+        }
+        let Some(ts) = ev.get("timestamp").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        if ts.len() < 7 {
+            continue;
+        }
+        let month = ts[..7].to_owned();
+        let success = ev
+            .get("success")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+        let tokens = ev
+            .get("tokens_used")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        let cost = ev
+            .get("cost_usd")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0);
+        let entry = map.entry(month).or_insert((0usize, 0usize, 0u64, 0.0f64));
+        entry.0 += 1;
+        if success {
+            entry.1 += 1;
+        }
+        entry.2 += tokens;
+        entry.3 += cost;
+    }
+
+    if map.is_empty() {
+        println!("No completed delegations found.");
+        return Ok(());
+    }
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!("Monthly Delegation Breakdown{scope}");
+    println!();
+    println!(
+        "{:<7}  {:>7}  {:>8}  {:>10}  {:>10}",
+        "month", "count", "ok%", "tokens", "cost"
+    );
+    println!("{}", "─".repeat(50));
+
+    let mut total_count = 0usize;
+    let mut total_success = 0usize;
+    let mut total_tokens: u64 = 0;
+    let mut total_cost: f64 = 0.0;
+
+    for (month, (count, success_count, tokens, cost)) in &map {
+        let ok_pct = format!("{:.1}%", 100.0 * (*success_count) as f64 / (*count) as f64);
+        let tok_str = if *tokens > 0 {
+            tokens.to_string()
+        } else {
+            "—".to_owned()
+        };
+        let cost_str = if *cost > 0.0 {
+            format!("${cost:.4}")
+        } else {
+            "—".to_owned()
+        };
+        println!(
+            "{:<7}  {:>7}  {:>8}  {:>10}  {:>10}",
+            month, count, ok_pct, tok_str, cost_str,
+        );
+        total_count += count;
+        total_success += success_count;
+        total_tokens += tokens;
+        total_cost += cost;
+    }
+
+    println!("{}", "─".repeat(50));
+    println!(
+        "{} month(s)  •  {} total delegations  •  {} succeeded  •  ${:.4} total cost",
+        map.len(),
+        total_count,
+        total_success,
+        total_cost,
+    );
+    Ok(())
+}
+
 /// `ExportFormat::Csv`: emits a header row followed by one row per
 /// `DelegationEnd` event with columns:
 /// `run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp`
@@ -6185,6 +6309,98 @@ mod tests {
         }
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_hourly(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    // ── print_monthly tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn print_monthly_missing_log() {
+        let path = std::env::temp_dir().join("zeroclaw_test_monthly_missing.jsonl");
+        let _ = std::fs::remove_file(&path);
+        let result = print_monthly(&path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_monthly_empty_log() {
+        let path = std::env::temp_dir().join("zeroclaw_test_monthly_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_monthly(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_monthly_no_ends() {
+        let path = std::env::temp_dir().join("zeroclaw_test_monthly_noends.jsonl");
+        let start = serde_json::json!({
+            "event_type": "DelegationStart",
+            "run_id": "run-a",
+            "agent_name": "research",
+            "depth": 0,
+            "timestamp": "2026-01-01T10:00:00Z"
+        });
+        std::fs::write(&path, serde_json::to_string(&start).unwrap() + "\n").unwrap();
+        let result = print_monthly(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_monthly_groups_by_month() {
+        let path = std::env::temp_dir().join("zeroclaw_test_monthly_groups.jsonl");
+        let mut lines = Vec::new();
+        // Two events in Jan, one in Feb.
+        for ts in &[
+            "2026-01-01T09:00:00Z",
+            "2026-01-15T11:00:00Z",
+            "2026-02-03T10:00:00Z",
+        ] {
+            lines.push(
+                serde_json::to_string(&make_end("run-a", "research", 0, ts, 100, 0.001, true))
+                    .unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_monthly(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_monthly_oldest_first() {
+        let path = std::env::temp_dir().join("zeroclaw_test_monthly_oldest.jsonl");
+        let mut lines = Vec::new();
+        // Write newer month first — BTreeMap should sort oldest first.
+        for ts in &["2026-03-01T10:00:00Z", "2026-01-01T10:00:00Z"] {
+            lines.push(
+                serde_json::to_string(&make_end("run-a", "research", 0, ts, 100, 0.001, true))
+                    .unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_monthly(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_monthly_filters_by_run() {
+        let path = std::env::temp_dir().join("zeroclaw_test_monthly_runfilter.jsonl");
+        let mut lines = Vec::new();
+        for (run, ts) in &[
+            ("run-keep", "2026-01-01T10:00:00Z"),
+            ("run-skip", "2026-02-01T10:00:00Z"),
+        ] {
+            lines.push(
+                serde_json::to_string(&make_end(run, "research", 0, ts, 100, 0.001, true))
+                    .unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_monthly(&path, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }
