@@ -4580,6 +4580,90 @@ pub fn print_day_of_month(log_path: &Path, run_id: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Show delegation counts, success rate, token usage, and cost bucketed by
+/// cost per 1 000 tokens (token efficiency): very cheap (<$0.002/1k),
+/// cheap ($0.002–$0.008/1k), moderate ($0.008–$0.020/1k), expensive (>$0.020/1k).
+///
+/// Delegations with zero `tokens_used` are skipped (efficiency undefined).
+/// When `run_id` is `Some`, only events from that run are included.
+/// Produces no output (and returns `Ok`) when the log is absent or empty.
+pub fn print_token_efficiency(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    const LABELS: [&str; 4] = ["very cheap", "cheap", "moderate", "expensive"];
+    let mut buckets: [(usize, usize, u64, f64); 4] = [(0, 0, 0, 0.0); 4];
+
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        return Ok(());
+    }
+
+    for ev in &all_events {
+        if ev.get("event_type").and_then(|v| v.as_str()).unwrap_or("") != "DelegationEnd" {
+            continue;
+        }
+        if let Some(rid) = run_id {
+            if ev.get("run_id").and_then(|v| v.as_str()).unwrap_or("") != rid {
+                continue;
+            }
+        }
+        let tokens = ev.get("tokens_used").and_then(|v| v.as_u64()).unwrap_or(0);
+        if tokens == 0 {
+            continue;
+        }
+        let cost = ev.get("cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let efficiency = cost / (tokens as f64 / 1_000.0);
+        let idx: usize = if efficiency < 0.002 {
+            0
+        } else if efficiency < 0.008 {
+            1
+        } else if efficiency < 0.020 {
+            2
+        } else {
+            3
+        };
+        let success = ev.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+        let (c, s, t, co) = buckets[idx];
+        buckets[idx] = (c + 1, s + if success { 1 } else { 0 }, t + tokens, co + cost);
+    }
+
+    if buckets.iter().all(|(c, ..)| *c == 0) {
+        return Ok(());
+    }
+
+    let sep = "\u{2500}".repeat(53);
+    println!("{:<10}  {:>7}  {:>8}  {:>10}  {:>10}", "tier", "count", "ok%", "tokens", "cost ($)");
+    println!("{sep}");
+
+    let mut total_count = 0usize;
+    let mut total_success = 0usize;
+    let mut total_cost = 0.0f64;
+    let mut populated = 0usize;
+
+    for (i, &(count, success_count, tokens, cost)) in buckets.iter().enumerate() {
+        if count == 0 {
+            continue;
+        }
+        populated += 1;
+        let ok_pct = 100.0 * success_count as f64 / count as f64;
+        println!(
+            "{:<10}  {:>7}  {:>7.1}%  {:>10}  {:>10.4}",
+            LABELS[i], count, ok_pct, tokens, cost,
+        );
+        total_count += count;
+        total_success += success_count;
+        total_cost += cost;
+    }
+
+    println!("{sep}");
+    println!(
+        "{} bucket(s) populated  \u{2022}  {} total delegations  \u{2022}  {} succeeded  \u{2022}  ${:.4} total cost",
+        populated,
+        total_count,
+        total_success,
+        total_cost,
+    );
+    Ok(())
+}
+
 /// `ExportFormat::Csv`: emits a header row followed by one row per
 /// `DelegationEnd` event with columns:
 /// `run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp`
@@ -9603,6 +9687,126 @@ mod tests {
         ];
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_day_of_month(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    // ── Phase 87: print_token_efficiency ─────────────────────────────────────
+
+    fn make_eff_event(
+        run_id: &str,
+        tokens: u64,
+        cost: f64,
+        success: bool,
+        ts: &str,
+    ) -> String {
+        serde_json::to_string(&serde_json::json!({
+            "event_type": "DelegationEnd",
+            "run_id": run_id,
+            "agent_name": "researcher",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "depth": 0u32,
+            "duration_ms": 1000u64,
+            "tokens_used": tokens,
+            "cost_usd": cost,
+            "success": success,
+            "timestamp": ts,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn print_token_efficiency_all_buckets() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_eff_all.jsonl");
+        let lines = vec![
+            // very cheap: 1000 tokens, $0.001 → $0.001/1k < $0.002
+            make_eff_event("run1", 1000, 0.001, true, "2026-02-01T10:00:00Z"),
+            // cheap: 1000 tokens, $0.005 → $0.005/1k ∈ [$0.002, $0.008)
+            make_eff_event("run1", 1000, 0.005, true, "2026-02-01T11:00:00Z"),
+            // moderate: 1000 tokens, $0.012 → $0.012/1k ∈ [$0.008, $0.020)
+            make_eff_event("run1", 1000, 0.012, false, "2026-02-01T12:00:00Z"),
+            // expensive: 1000 tokens, $0.025 → $0.025/1k ≥ $0.020
+            make_eff_event("run1", 1000, 0.025, true, "2026-02-01T13:00:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_token_efficiency(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_token_efficiency_empty_log() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_eff_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_token_efficiency(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_token_efficiency_missing_log() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_eff_missing_XXXX.jsonl");
+        let _ = std::fs::remove_file(&path);
+        let result = print_token_efficiency(&path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_token_efficiency_skips_zero_tokens() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_eff_zerotok.jsonl");
+        // event with 0 tokens should be skipped entirely
+        let zero_ev = serde_json::to_string(&serde_json::json!({
+            "event_type": "DelegationEnd",
+            "run_id": "run1",
+            "agent_name": "researcher",
+            "tokens_used": 0u64,
+            "cost_usd": 0.0f64,
+            "success": true,
+            "timestamp": "2026-02-01T10:00:00Z",
+        }))
+        .unwrap();
+        let valid_ev = make_eff_event("run1", 2000, 0.002, true, "2026-02-01T11:00:00Z");
+        std::fs::write(&path, format!("{zero_ev}\n{valid_ev}\n")).unwrap();
+        let result = print_token_efficiency(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_token_efficiency_only_delegation_end() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_eff_evtype.jsonl");
+        let start_ev = serde_json::to_string(&serde_json::json!({
+            "event_type": "DelegationStart",
+            "run_id": "run1",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "depth": 0u32,
+            "timestamp": "2026-02-01T10:00:00Z",
+        }))
+        .unwrap();
+        let end_ev = make_eff_event("run1", 500, 0.001, true, "2026-02-01T10:01:00Z");
+        std::fs::write(&path, format!("{start_ev}\n{end_ev}\n")).unwrap();
+        let result = print_token_efficiency(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_token_efficiency_filters_by_run() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_eff_runfilter.jsonl");
+        let lines = vec![
+            make_eff_event("run-keep", 1000, 0.003, true, "2026-02-01T10:00:00Z"),
+            make_eff_event("run-skip", 1000, 0.015, true, "2026-02-01T11:00:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_token_efficiency(&path, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }
