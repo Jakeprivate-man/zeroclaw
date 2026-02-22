@@ -418,7 +418,9 @@ Examples:
   zeroclaw delegations cost --run <id>  # cost breakdown for one run
   zeroclaw delegations recent        # 10 most recently completed delegations
   zeroclaw delegations recent --limit 5  # 5 most recent
-  zeroclaw delegations recent --run <id>  # most recent within one run")]
+  zeroclaw delegations recent --run <id>  # most recent within one run
+  zeroclaw delegations active             # all currently in-flight delegations
+  zeroclaw delegations active --run <id>  # in-flight within one run")]
     Delegations {
         #[command(subcommand)]
         delegation_command: Option<DelegationCommands>,
@@ -634,6 +636,26 @@ Examples:
         /// Number of rows to display (default: 10)
         #[arg(long, default_value_t = 10)]
         limit: usize,
+    },
+    /// List currently in-flight delegations (started but not yet finished)
+    #[command(long_about = "\
+List delegations that are currently in-flight: `DelegationStart` events that have
+no matching `DelegationEnd` in the log. Starts are matched to ends FIFO per
+(run_id, agent_name, depth) key, so concurrent delegations of the same agent are
+handled correctly.
+
+Use `--run` to scope to a single invocation. Results are sorted oldest-start first
+so the longest-running delegation appears at the top.
+
+Output columns: # | run (prefix) | agent | depth | started (UTC) | elapsed
+
+Examples:
+  zeroclaw delegations active              # all in-flight across all runs
+  zeroclaw delegations active --run <id>   # in-flight within one run")]
+    Active {
+        /// Scope to a specific run ID (default: show all runs)
+        #[arg(long)]
+        run: Option<String>,
     },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
@@ -1317,6 +1339,9 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::Recent { run, limit }) => {
                     observability::delegation_report::print_recent(&log_path, run.as_deref(), limit)
+                }
+                Some(DelegationCommands::Active { run }) => {
+                    observability::delegation_report::print_active(&log_path, run.as_deref())
                 }
                 Some(DelegationCommands::Diff { run_a, run_b }) => {
                     observability::delegation_report::print_diff(
