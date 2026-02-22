@@ -4152,6 +4152,138 @@ pub fn print_depth_bucket(log_path: &Path, run_id: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Aggregate completed delegations by model-family tier and print a
+/// breakdown table, ordered haiku → sonnet → opus → other.
+///
+/// Tier assignment is based on a case-insensitive substring match on the
+/// `model` field:
+///   haiku   model name contains "haiku"
+///   sonnet  model name contains "sonnet"
+///   opus    model name contains "opus"
+///   other   everything else (including missing/null model)
+///
+/// Only `DelegationEnd` events are counted.  Empty tiers are omitted.
+/// Use `run_id` to scope to a single process invocation; `None` aggregates
+/// across every stored run.
+///
+/// Output columns: tier | count | ok% | tokens | cost
+pub fn print_model_tier(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    const LABELS: [&str; 4] = ["haiku", "sonnet", "opus", "other"];
+
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    let events: Vec<&Value> = if let Some(rid) = run_id {
+        all_events
+            .iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events.iter().collect()
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    // tiers[i] = (count, success_count, tokens, cost)
+    // 0=haiku, 1=sonnet, 2=opus, 3=other
+    let mut tiers: [(usize, usize, u64, f64); 4] = [(0, 0, 0, 0.0); 4];
+
+    for ev in &events {
+        if ev.get("event_type").and_then(|x| x.as_str()) != Some("DelegationEnd") {
+            continue;
+        }
+        let model = ev
+            .get("model")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let idx = if model.contains("haiku") {
+            0
+        } else if model.contains("sonnet") {
+            1
+        } else if model.contains("opus") {
+            2
+        } else {
+            3
+        };
+        let ok = ev.get("success").and_then(|x| x.as_bool()).unwrap_or(false);
+        let tokens = ev
+            .get("tokens_used")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        let cost = ev
+            .get("cost_usd")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0);
+        tiers[idx].0 += 1;
+        if ok {
+            tiers[idx].1 += 1;
+        }
+        tiers[idx].2 += tokens;
+        tiers[idx].3 += cost;
+    }
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!("Model Tier Breakdown{scope}");
+    println!();
+    println!(
+        "{:<8}  {:>7}  {:>8}  {:>10}  {:>10}",
+        "tier", "count", "ok%", "tokens", "cost"
+    );
+    println!("{}", "\u{2500}".repeat(51));
+
+    let mut total_count: usize = 0;
+    let mut total_success: usize = 0;
+    let mut total_tokens: u64 = 0;
+    let mut total_cost: f64 = 0.0;
+    let mut populated: usize = 0;
+
+    for (i, (count, success_count, tokens, cost)) in tiers.iter().enumerate() {
+        if *count == 0 {
+            continue;
+        }
+        populated += 1;
+        let ok_pct = format!("{:.1}%", 100.0 * (*success_count as f64) / (*count as f64));
+        let tok_str = if *tokens > 0 {
+            tokens.to_string()
+        } else {
+            "\u{2014}".to_owned()
+        };
+        let cost_str = if *cost > 0.0 {
+            format!("${cost:.4}")
+        } else {
+            "\u{2014}".to_owned()
+        };
+        println!(
+            "{:<8}  {:>7}  {:>8}  {:>10}  {:>10}",
+            LABELS[i], count, ok_pct, tok_str, cost_str,
+        );
+        total_count += count;
+        total_success += success_count;
+        total_tokens += tokens;
+        total_cost += cost;
+    }
+
+    println!("{}", "\u{2500}".repeat(51));
+    println!(
+        "{} tier(s) populated  \u{2022}  {} total delegations  \u{2022}  {} succeeded  \u{2022}  ${:.4} total cost",
+        populated,
+        total_count,
+        total_success,
+        total_cost,
+    );
+    Ok(())
+}
+
 /// `ExportFormat::Csv`: emits a header row followed by one row per
 /// `DelegationEnd` event with columns:
 /// `run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp`
@@ -8681,6 +8813,124 @@ mod tests {
         }
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_depth_bucket(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    // ── print_model_tier tests ───────────────────────────────────────────────
+
+    #[test]
+    fn print_model_tier_missing_log() {
+        let path =
+            std::path::PathBuf::from("/tmp/zeroclaw_no_such_file_model_tier.jsonl");
+        let result = print_model_tier(&path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_model_tier_empty_log() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_model_tier_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_model_tier(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_model_tier_no_ends() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_model_tier_noends.jsonl");
+        let ev = serde_json::json!({
+            "event_type": "DelegationStart",
+            "run_id": "run-1",
+            "agent_name": "researcher",
+            "model": "claude-sonnet-4",
+            "timestamp": "2026-02-01T10:00:00Z",
+        });
+        std::fs::write(&path, serde_json::to_string(&ev).unwrap() + "\n").unwrap();
+        let result = print_model_tier(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_model_tier_groups_by_family() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_model_tier_groups.jsonl");
+        let mut lines = Vec::new();
+        for model in &["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6", "gpt-4o"] {
+            let ev = serde_json::json!({
+                "event_type": "DelegationEnd",
+                "run_id": "run-1",
+                "agent_name": "researcher",
+                "model": model,
+                "depth": 0u32,
+                "duration_ms": 1000u64,
+                "tokens_used": 500u64,
+                "cost_usd": 0.005f64,
+                "success": true,
+                "timestamp": "2026-02-01T10:00:00Z",
+            });
+            lines.push(serde_json::to_string(&ev).unwrap());
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_model_tier(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_model_tier_case_insensitive() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_model_tier_case.jsonl");
+        let mut lines = Vec::new();
+        for model in &["Claude-Sonnet-4", "CLAUDE-HAIKU-3"] {
+            let ev = serde_json::json!({
+                "event_type": "DelegationEnd",
+                "run_id": "run-1",
+                "agent_name": "researcher",
+                "model": model,
+                "depth": 0u32,
+                "duration_ms": 800u64,
+                "tokens_used": 300u64,
+                "cost_usd": 0.003f64,
+                "success": true,
+                "timestamp": "2026-02-01T10:00:00Z",
+            });
+            lines.push(serde_json::to_string(&ev).unwrap());
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_model_tier(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_model_tier_filters_by_run() {
+        let path =
+            std::env::temp_dir().join("zeroclaw_test_model_tier_runfilter.jsonl");
+        let mut lines = Vec::new();
+        for (run, model) in &[
+            ("run-keep", "claude-sonnet-4-6"),
+            ("run-skip", "claude-opus-4-6"),
+        ] {
+            let ev = serde_json::json!({
+                "event_type": "DelegationEnd",
+                "run_id": run,
+                "agent_name": "researcher",
+                "model": model,
+                "depth": 0u32,
+                "duration_ms": 1000u64,
+                "tokens_used": 500u64,
+                "cost_usd": 0.005f64,
+                "success": true,
+                "timestamp": "2026-02-01T10:00:00Z",
+            });
+            lines.push(serde_json::to_string(&ev).unwrap());
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_model_tier(&path, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }
