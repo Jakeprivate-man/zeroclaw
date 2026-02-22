@@ -962,6 +962,28 @@ Examples:
         #[arg(long)]
         run: Option<String>,
     },
+    /// Per-ISO-week delegation breakdown (YYYY-WXX), oldest week first
+    #[command(long_about = "\
+Aggregate all completed delegations by ISO 8601 week (YYYY-WXX),
+sorted oldest-first so the table reads chronologically.  Use `--run` to
+scope to a single run.
+
+The week key is derived from the RFC-3339 timestamp using chrono's
+iso_week() (e.g. 2026-01-05T14:30:00Z → 2026-W02).
+
+Output columns: week | count | ok% | tokens | cost
+
+The footer shows total weeks, total delegation count, success count, and
+cumulative cost.
+
+Examples:
+  zeroclaw delegations weekly              # all runs, per-week breakdown
+  zeroclaw delegations weekly --run <id>   # one run only")]
+    Weekly {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
 Compare per-agent delegation statistics between two runs side-by-side.
@@ -1721,6 +1743,12 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::Weekday { run }) => {
                     observability::delegation_report::print_weekday(
+                        &log_path,
+                        run.as_deref(),
+                    )
+                }
+                Some(DelegationCommands::Weekly { run }) => {
+                    observability::delegation_report::print_weekly(
                         &log_path,
                         run.as_deref(),
                     )
