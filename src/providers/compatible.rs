@@ -868,6 +868,7 @@ impl OpenAiCompatibleProvider {
         ProviderChatResponse {
             text: message.content,
             tool_calls,
+            usage: None,
         }
     }
 
@@ -1197,6 +1198,7 @@ impl Provider for OpenAiCompatibleProvider {
                 return Ok(ProviderChatResponse {
                     text: Some(text),
                     tool_calls: vec![],
+                    usage: None,
                 });
             }
         };
@@ -1231,7 +1233,7 @@ impl Provider for OpenAiCompatibleProvider {
             })
             .collect::<Vec<_>>();
 
-        Ok(ProviderChatResponse { text, tool_calls })
+        Ok(ProviderChatResponse { text, tool_calls, usage: None })
     }
 
     async fn chat(
@@ -1281,6 +1283,7 @@ impl Provider for OpenAiCompatibleProvider {
                         .map(|text| ProviderChatResponse {
                             text: Some(text),
                             tool_calls: vec![],
+                            usage: None,
                         })
                         .map_err(|responses_err| {
                             anyhow::anyhow!(
@@ -1308,6 +1311,7 @@ impl Provider for OpenAiCompatibleProvider {
                 return Ok(ProviderChatResponse {
                     text: Some(text),
                     tool_calls: vec![],
+                    usage: None,
                 });
             }
 
@@ -1318,6 +1322,7 @@ impl Provider for OpenAiCompatibleProvider {
                     .map(|text| ProviderChatResponse {
                         text: Some(text),
                         tool_calls: vec![],
+                        usage: None,
                     })
                     .map_err(|responses_err| {
                         anyhow::anyhow!(

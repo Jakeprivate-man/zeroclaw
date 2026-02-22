@@ -53,6 +53,11 @@ impl CostTracker {
             return Ok(BudgetCheck::Allowed);
         }
 
+        // When allow_override is set the user has explicitly opted-out of enforcement.
+        if self.config.allow_override {
+            return Ok(BudgetCheck::Allowed);
+        }
+
         if !estimated_cost_usd.is_finite() || estimated_cost_usd < 0.0 {
             return Err(anyhow!(
                 "Estimated cost must be a finite, non-negative value"
@@ -104,6 +109,29 @@ impl CostTracker {
         }
 
         Ok(BudgetCheck::Allowed)
+    }
+
+    /// Record a usage event by model name, looking up pricing from config.
+    ///
+    /// Uses the `prices` table in `CostConfig` to calculate cost. Falls back to
+    /// zero cost (token-only tracking) when no price entry is found for the model.
+    pub fn record_model_usage(
+        &self,
+        model: &str,
+        prompt_tokens: u64,
+        completion_tokens: u64,
+    ) -> Result<()> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+        let (input_price, output_price) = self
+            .config
+            .prices
+            .get(model)
+            .map(|p| (p.input, p.output))
+            .unwrap_or((0.0, 0.0));
+        let usage = TokenUsage::new(model, prompt_tokens, completion_tokens, input_price, output_price);
+        self.record_usage(usage)
     }
 
     /// Record a usage event.

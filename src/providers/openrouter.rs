@@ -1,6 +1,6 @@
 use crate::providers::traits::{
     ChatMessage, ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse,
-    Provider, ToolCall as ProviderToolCall,
+    Provider, ProviderUsage, ToolCall as ProviderToolCall,
 };
 use crate::tools::ToolSpec;
 use async_trait::async_trait;
@@ -24,9 +24,20 @@ struct Message {
     content: String,
 }
 
+/// Token usage as reported by OpenRouter (OpenAI-compatible format).
+#[derive(Debug, Deserialize)]
+struct ApiUsage {
+    #[serde(default)]
+    prompt_tokens: Option<u64>,
+    #[serde(default)]
+    completion_tokens: Option<u64>,
+}
+
 #[derive(Debug, Deserialize)]
 struct ApiChatResponse {
     choices: Vec<Choice>,
+    #[serde(default)]
+    usage: Option<ApiUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,6 +104,8 @@ struct NativeFunctionCall {
 #[derive(Debug, Deserialize)]
 struct NativeChatResponse {
     choices: Vec<NativeChoice>,
+    #[serde(default)]
+    usage: Option<ApiUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -202,7 +215,10 @@ impl OpenRouterProvider {
             .collect()
     }
 
-    fn parse_native_response(message: NativeResponseMessage) -> ProviderChatResponse {
+    fn parse_native_response(
+        message: NativeResponseMessage,
+        usage: Option<ApiUsage>,
+    ) -> ProviderChatResponse {
         let tool_calls = message
             .tool_calls
             .unwrap_or_default()
@@ -214,9 +230,17 @@ impl OpenRouterProvider {
             })
             .collect::<Vec<_>>();
 
+        let provider_usage = usage.and_then(|u| {
+            Some(ProviderUsage {
+                prompt_tokens: u.prompt_tokens?,
+                completion_tokens: u.completion_tokens?,
+            })
+        });
+
         ProviderChatResponse {
             text: message.content,
             tool_calls,
+            usage: provider_usage,
         }
     }
 
@@ -387,13 +411,14 @@ impl Provider for OpenRouterProvider {
         }
 
         let native_response: NativeChatResponse = response.json().await?;
+        let usage = native_response.usage;
         let message = native_response
             .choices
             .into_iter()
             .next()
             .map(|c| c.message)
             .ok_or_else(|| anyhow::anyhow!("No response from OpenRouter"))?;
-        Ok(Self::parse_native_response(message))
+        Ok(Self::parse_native_response(message, usage))
     }
 
     fn supports_native_tools(&self) -> bool {
@@ -475,13 +500,14 @@ impl Provider for OpenRouterProvider {
         }
 
         let native_response: NativeChatResponse = response.json().await?;
+        let usage = native_response.usage;
         let message = native_response
             .choices
             .into_iter()
             .next()
             .map(|c| c.message)
             .ok_or_else(|| anyhow::anyhow!("No response from OpenRouter"))?;
-        Ok(Self::parse_native_response(message))
+        Ok(Self::parse_native_response(message, usage))
     }
 }
 
@@ -706,7 +732,7 @@ mod tests {
             }]),
         };
 
-        let response = OpenRouterProvider::parse_native_response(message);
+        let response = OpenRouterProvider::parse_native_response(message, None);
 
         assert_eq!(response.text.as_deref(), Some("Here you go."));
         assert_eq!(response.tool_calls.len(), 1);
