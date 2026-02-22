@@ -342,6 +342,9 @@ def render() -> None:
         # Model success rank table (scoped to selected run when set)
         delegation_charts.render_model_success_rank_table(run_id=selected_run_id)
 
+        # Provider success rank table (scoped to selected run when set)
+        delegation_charts.render_provider_success_rank_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
