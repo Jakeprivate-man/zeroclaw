@@ -26,8 +26,12 @@ pub use verbose::VerboseObserver;
 use crate::config::ObservabilityConfig;
 use std::path::PathBuf;
 
-/// Factory: create the right observer from config
-pub fn create_observer(config: &ObservabilityConfig) -> Box<dyn Observer> {
+/// Factory: create the right observer from config.
+///
+/// `delegation_log` is the path where delegation events are written (e.g.
+/// `config.delegation_log_path()`). Callers own path computation so the log
+/// location stays consistent with the rest of the zeroclaw state directory.
+pub fn create_observer(config: &ObservabilityConfig, delegation_log: PathBuf) -> Box<dyn Observer> {
     // Create primary observer based on config
     let primary: Box<dyn Observer> = match config.backend.as_str() {
         "log" => Box::new(LogObserver::new()),
@@ -63,10 +67,7 @@ pub fn create_observer(config: &ObservabilityConfig) -> Box<dyn Observer> {
         }
     };
 
-    // Add delegation event logger (writes to ~/.zeroclaw/state/delegation.jsonl)
-    let delegation_log = PathBuf::from(
-        shellexpand::tilde("~/.zeroclaw/state/delegation.jsonl").as_ref()
-    );
+    // Add delegation event logger (writes to the caller-supplied path).
     let delegation_logger: Box<dyn Observer> = Box::new(DelegationEventObserver::new(delegation_log));
 
     // Combine both observers using MultiObserver
@@ -77,6 +78,10 @@ pub fn create_observer(config: &ObservabilityConfig) -> Box<dyn Observer> {
 mod tests {
     use super::*;
 
+    fn test_log() -> PathBuf {
+        std::env::temp_dir().join("zeroclaw_test_delegation.jsonl")
+    }
+
     #[test]
     fn factory_none_returns_multi() {
         let cfg = ObservabilityConfig {
@@ -84,7 +89,7 @@ mod tests {
             ..ObservabilityConfig::default()
         };
         // Factory now returns MultiObserver wrapping primary + delegation logger
-        assert_eq!(create_observer(&cfg).name(), "multi");
+        assert_eq!(create_observer(&cfg, test_log()).name(), "multi");
     }
 
     #[test]
@@ -93,7 +98,7 @@ mod tests {
             backend: "noop".into(),
             ..ObservabilityConfig::default()
         };
-        assert_eq!(create_observer(&cfg).name(), "multi");
+        assert_eq!(create_observer(&cfg, test_log()).name(), "multi");
     }
 
     #[test]
@@ -102,7 +107,7 @@ mod tests {
             backend: "log".into(),
             ..ObservabilityConfig::default()
         };
-        assert_eq!(create_observer(&cfg).name(), "multi");
+        assert_eq!(create_observer(&cfg, test_log()).name(), "multi");
     }
 
     #[test]
@@ -111,7 +116,7 @@ mod tests {
             backend: "prometheus".into(),
             ..ObservabilityConfig::default()
         };
-        assert_eq!(create_observer(&cfg).name(), "multi");
+        assert_eq!(create_observer(&cfg, test_log()).name(), "multi");
     }
 
     #[test]
@@ -121,7 +126,7 @@ mod tests {
             otel_endpoint: Some("http://127.0.0.1:19999".into()),
             otel_service_name: Some("test".into()),
         };
-        assert_eq!(create_observer(&cfg).name(), "multi");
+        assert_eq!(create_observer(&cfg, test_log()).name(), "multi");
     }
 
     #[test]
@@ -131,7 +136,7 @@ mod tests {
             otel_endpoint: Some("http://127.0.0.1:19999".into()),
             otel_service_name: Some("test".into()),
         };
-        assert_eq!(create_observer(&cfg).name(), "multi");
+        assert_eq!(create_observer(&cfg, test_log()).name(), "multi");
     }
 
     #[test]
@@ -141,7 +146,7 @@ mod tests {
             otel_endpoint: Some("http://127.0.0.1:19999".into()),
             otel_service_name: Some("test".into()),
         };
-        assert_eq!(create_observer(&cfg).name(), "multi");
+        assert_eq!(create_observer(&cfg, test_log()).name(), "multi");
     }
 
     #[test]
@@ -150,7 +155,7 @@ mod tests {
             backend: "xyzzy_unknown".into(),
             ..ObservabilityConfig::default()
         };
-        assert_eq!(create_observer(&cfg).name(), "multi");
+        assert_eq!(create_observer(&cfg, test_log()).name(), "multi");
     }
 
     #[test]
@@ -159,7 +164,7 @@ mod tests {
             backend: String::new(),
             ..ObservabilityConfig::default()
         };
-        assert_eq!(create_observer(&cfg).name(), "multi");
+        assert_eq!(create_observer(&cfg, test_log()).name(), "multi");
     }
 
     #[test]
@@ -168,6 +173,6 @@ mod tests {
             backend: "xyzzy_garbage_123".into(),
             ..ObservabilityConfig::default()
         };
-        assert_eq!(create_observer(&cfg).name(), "multi");
+        assert_eq!(create_observer(&cfg, test_log()).name(), "multi");
     }
 }

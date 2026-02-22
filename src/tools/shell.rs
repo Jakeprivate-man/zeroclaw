@@ -74,6 +74,17 @@ impl Tool for ShellTool {
             });
         }
 
+        if self.security.is_daily_cost_cap_exceeded() {
+            return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!(
+                    "Daily cost cap of ${:.2} reached — no further actions until tomorrow",
+                    self.security.daily_cost_cap_usd
+                )),
+            });
+        }
+
         match self.security.validate_command_execution(command, approved) {
             Ok(_) => {}
             Err(reason) => {

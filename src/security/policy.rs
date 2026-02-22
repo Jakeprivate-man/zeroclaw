@@ -1,6 +1,8 @@
+use chrono::Utc;
 use parking_lot::Mutex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -87,6 +89,10 @@ pub struct SecurityPolicy {
     pub forbidden_paths: Vec<String>,
     pub max_actions_per_hour: u32,
     pub max_cost_per_day_cents: u32,
+    /// Derived from `max_cost_per_day_cents`; used by `is_daily_cost_cap_exceeded`.
+    pub daily_cost_cap_usd: f64,
+    /// Path to costs.jsonl — used to sum today's spend for cost-cap enforcement.
+    pub costs_path: PathBuf,
     pub require_approval_for_medium_risk: bool,
     pub block_high_risk_commands: bool,
     pub tracker: ActionTracker,
@@ -94,9 +100,11 @@ pub struct SecurityPolicy {
 
 impl Default for SecurityPolicy {
     fn default() -> Self {
+        let workspace_dir = PathBuf::from(".");
+        let costs_path = workspace_dir.join("state").join("costs.jsonl");
         Self {
             autonomy: AutonomyLevel::Supervised,
-            workspace_dir: PathBuf::from("."),
+            workspace_dir,
             workspace_only: true,
             allowed_commands: vec![
                 "git".into(),
@@ -137,6 +145,8 @@ impl Default for SecurityPolicy {
             ],
             max_actions_per_hour: 20,
             max_cost_per_day_cents: 500,
+            daily_cost_cap_usd: 5.0,
+            costs_path,
             require_approval_for_medium_risk: true,
             block_high_risk_commands: true,
             tracker: ActionTracker::new(),
@@ -778,11 +788,57 @@ impl SecurityPolicy {
         self.tracker.count() >= self.max_actions_per_hour as usize
     }
 
+    /// Return `true` if today's accumulated cost in `costs.jsonl` has reached
+    /// or exceeded `daily_cost_cap_usd`. Returns `false` when the cap is zero
+    /// (disabled) or when the costs file does not exist yet.
+    ///
+    /// This is a synchronous, best-effort check — I/O errors are ignored and
+    /// treated as "not exceeded" to avoid blocking valid work due to filesystem
+    /// issues.
+    pub fn is_daily_cost_cap_exceeded(&self) -> bool {
+        if self.daily_cost_cap_usd <= 0.0 {
+            return false;
+        }
+
+        let Ok(file) = std::fs::File::open(&self.costs_path) else {
+            return false;
+        };
+
+        let today = Utc::now().date_naive();
+        let mut daily_cost = 0.0_f64;
+
+        for line in std::io::BufReader::new(file).lines() {
+            let Ok(line) = line else { continue };
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(record) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+                continue;
+            };
+            let Some(ts_str) = record.get("timestamp").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Ok(ts) = ts_str.parse::<chrono::DateTime<Utc>>() else {
+                continue;
+            };
+            if ts.date_naive() == today {
+                if let Some(cost) = record.get("cost_usd").and_then(|v| v.as_f64()) {
+                    daily_cost += cost;
+                }
+            }
+        }
+
+        daily_cost >= self.daily_cost_cap_usd
+    }
+
     /// Build from config sections
     pub fn from_config(
         autonomy_config: &crate::config::AutonomyConfig,
         workspace_dir: &Path,
     ) -> Self {
+        let daily_cost_cap_usd = f64::from(autonomy_config.max_cost_per_day_cents) / 100.0;
+        let costs_path = workspace_dir.join("state").join("costs.jsonl");
         Self {
             autonomy: autonomy_config.level,
             workspace_dir: workspace_dir.to_path_buf(),
@@ -791,6 +847,8 @@ impl SecurityPolicy {
             forbidden_paths: autonomy_config.forbidden_paths.clone(),
             max_actions_per_hour: autonomy_config.max_actions_per_hour,
             max_cost_per_day_cents: autonomy_config.max_cost_per_day_cents,
+            daily_cost_cap_usd,
+            costs_path,
             require_approval_for_medium_risk: autonomy_config.require_approval_for_medium_risk,
             block_high_risk_commands: autonomy_config.block_high_risk_commands,
             tracker: ActionTracker::new(),

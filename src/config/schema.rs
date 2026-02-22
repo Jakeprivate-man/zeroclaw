@@ -681,6 +681,28 @@ pub struct GatewayConfig {
     /// Maximum distinct idempotency keys retained in memory.
     #[serde(default = "default_gateway_idempotency_max_keys")]
     pub idempotency_max_keys: usize,
+
+    /// Enable CORS middleware on all gateway routes (default: false).
+    /// When enabled, requests from `cors_allowed_origins` are permitted.
+    #[serde(default)]
+    pub cors_enabled: bool,
+
+    /// Origins allowed when `cors_enabled = true` (e.g. `["http://localhost:5001"]`).
+    /// An empty list means no origins are permitted even if CORS is enabled.
+    #[serde(default)]
+    pub cors_allowed_origins: Vec<String>,
+
+    /// Serve static files from `static_dir` at the `/` route (default: false).
+    #[serde(default)]
+    pub serve_static_files: bool,
+
+    /// Directory to serve when `serve_static_files = true` (default: `"./web-ui/dist"`).
+    #[serde(default = "default_static_dir")]
+    pub static_dir: String,
+}
+
+fn default_static_dir() -> String {
+    "./web-ui/dist".into()
 }
 
 fn default_gateway_port() -> u16 {
@@ -729,6 +751,10 @@ impl Default for GatewayConfig {
             rate_limit_max_keys: default_gateway_rate_limit_max_keys(),
             idempotency_ttl_secs: default_idempotency_ttl_secs(),
             idempotency_max_keys: default_gateway_idempotency_max_keys(),
+            cors_enabled: false,
+            cors_allowed_origins: Vec::new(),
+            serve_static_files: false,
+            static_dir: default_static_dir(),
         }
     }
 }
@@ -3482,6 +3508,20 @@ impl Config {
         set_runtime_proxy_config(self.proxy.clone());
     }
 
+    /// Return the path to the delegation event log (`delegation.jsonl`).
+    ///
+    /// Derived from the directory that contains `config.toml` (the "zeroclaw
+    /// dir", typically `~/.zeroclaw`). Using this helper keeps the delegation
+    /// log co-located with other zeroclaw state, and prevents it from
+    /// diverging when the workspace directory is changed.
+    pub fn delegation_log_path(&self) -> PathBuf {
+        self.config_path
+            .parent()
+            .unwrap_or(self.workspace_dir.as_path())
+            .join("state")
+            .join("delegation.jsonl")
+    }
+
     pub async fn save(&self) -> Result<()> {
         // Encrypt secrets before serialization
         let mut config_to_save = self.clone();
@@ -4672,6 +4712,10 @@ channel_id = "C123"
             rate_limit_max_keys: 2048,
             idempotency_ttl_secs: 600,
             idempotency_max_keys: 4096,
+            cors_enabled: false,
+            cors_allowed_origins: vec![],
+            serve_static_files: false,
+            static_dir: "./web-ui/dist".into(),
         };
         let toml_str = toml::to_string(&g).unwrap();
         let parsed: GatewayConfig = toml::from_str(&toml_str).unwrap();

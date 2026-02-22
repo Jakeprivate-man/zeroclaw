@@ -1644,9 +1644,7 @@ async fn main() -> Result<()> {
             println!("  Boards:    {}", config.peripherals.boards.len());
 
             println!();
-            let delegation_log = std::path::PathBuf::from(
-                shellexpand::tilde("~/.zeroclaw/state/delegation.jsonl").as_ref(),
-            );
+            let delegation_log = config.delegation_log_path();
             println!("Delegations:");
             match observability::delegation_report::get_log_summary(&delegation_log) {
                 Ok(Some(s)) => {
@@ -1780,9 +1778,7 @@ async fn main() -> Result<()> {
         },
 
         Commands::Delegations { delegation_command } => {
-            let log_path = std::path::PathBuf::from(
-                shellexpand::tilde("~/.zeroclaw/state/delegation.jsonl").as_ref(),
-            );
+            let log_path = config.delegation_log_path();
             match delegation_command {
                 None => observability::delegation_report::print_summary(&log_path),
                 Some(DelegationCommands::List) => {

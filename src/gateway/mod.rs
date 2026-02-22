@@ -30,7 +30,9 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::services::ServeDir;
 use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
@@ -334,7 +336,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         &config.workspace_dir,
     ));
     let observer: Arc<dyn crate::observability::Observer> =
-        Arc::from(crate::observability::create_observer(&config.observability));
+        Arc::from(crate::observability::create_observer(&config.observability, config.delegation_log_path()));
 
     let (composio_key, composio_entity_id) = if config.composio.enabled {
         (
@@ -506,7 +508,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
 
     // Build shared state
     let observer: Arc<dyn crate::observability::Observer> =
-        Arc::from(crate::observability::create_observer(&config.observability));
+        Arc::from(crate::observability::create_observer(&config.observability, config.delegation_log_path()));
 
     let state = AppState {
         config: config_state,
@@ -528,7 +530,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
     };
 
     // Build router with middleware
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/health", get(handle_health))
         .route("/metrics", get(handle_metrics))
         .route("/pair", post(handle_pair))
@@ -536,7 +538,30 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .route("/whatsapp", get(handle_whatsapp_verify))
         .route("/whatsapp", post(handle_whatsapp_message))
         .route("/linq", post(handle_linq_webhook))
-        .with_state(state)
+        .with_state(state);
+
+    // Optional: CORS middleware
+    if config.gateway.cors_enabled && !config.gateway.cors_allowed_origins.is_empty() {
+        let origins: Vec<axum::http::HeaderValue> = config
+            .gateway
+            .cors_allowed_origins
+            .iter()
+            .filter_map(|o| o.parse().ok())
+            .collect();
+        app = app.layer(
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::list(origins))
+                .allow_methods(tower_http::cors::Any)
+                .allow_headers(tower_http::cors::Any),
+        );
+    }
+
+    // Optional: static file serving (must be added last so API routes take priority)
+    if config.gateway.serve_static_files && !config.gateway.static_dir.is_empty() {
+        app = app.nest_service("/", ServeDir::new(&config.gateway.static_dir));
+    }
+
+    let app = app
         .layer(RequestBodyLimitLayer::new(MAX_BODY_SIZE))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
