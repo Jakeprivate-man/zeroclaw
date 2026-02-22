@@ -6097,6 +6097,115 @@ pub fn print_provider_duration_rank(log_path: &Path, run_id: Option<&str>) -> Re
     Ok(())
 }
 
+/// Ranks runs by avg tokens per delegation (most token-intensive first).
+///
+/// Answers "which run consumed the most tokens per call?" — the run-level view
+/// of the token-rank series alongside agent-, model-, and provider-token-rank.
+///
+/// Output columns: `# | run | delegations | avg_tok | avg_cost | ok% | total_tok`
+///
+/// Sorted by avg_tok descending, ties by run_id ascending.
+/// When `run_id` is `Some`, only events from that run are included (single-row result).
+pub fn print_run_token_rank(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    // run_id → (count, success_count, total_tokens, total_cost)
+    let mut run_map: HashMap<String, (usize, usize, u64, f64)> = HashMap::new();
+
+    for ev in &all_events {
+        if ev.get("event_type").and_then(|x| x.as_str()) != Some("DelegationEnd") {
+            continue;
+        }
+        let Some(rid) = ev.get("run_id").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        if let Some(filter) = run_id {
+            if rid != filter {
+                continue;
+            }
+        }
+        let success = ev
+            .get("success")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+        let tokens = ev
+            .get("tokens_used")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        let cost = ev
+            .get("cost_usd")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0);
+        let entry = run_map.entry(rid.to_owned()).or_insert((0, 0, 0, 0.0));
+        entry.0 += 1;
+        if success {
+            entry.1 += 1;
+        }
+        entry.2 += tokens;
+        entry.3 += cost;
+    }
+
+    if run_map.is_empty() {
+        println!("No delegation events found.");
+        return Ok(());
+    }
+
+    let mut rows: Vec<(String, usize, usize, u64, f64)> = run_map
+        .into_iter()
+        .map(|(rid, (c, ok, tok, cost))| (rid, c, ok, tok, cost))
+        .collect();
+    // Sort: avg_tok desc, ties by run_id asc
+    rows.sort_by(|a, b| {
+        let avg_a = if a.1 > 0 { a.3 / a.1 as u64 } else { 0 };
+        let avg_b = if b.1 > 0 { b.3 / b.1 as u64 } else { 0 };
+        avg_b
+            .cmp(&avg_a)
+            .then(a.0.cmp(&b.0))
+    });
+
+    let total_delegations: usize = rows.iter().map(|(_, c, _, _, _)| c).sum();
+    let total_tokens: u64 = rows.iter().map(|(_, _, _, tok, _)| tok).sum();
+
+    println!(
+        " {:<3} {:<32} {:>11} {:>9} {:>10} {:>6} {:>12}",
+        "#", "run", "delegations", "avg_tok", "avg_cost", "ok%", "total_tok"
+    );
+    println!("{}", "─".repeat(90));
+    for (i, (rid, count, ok, tokens, cost)) in rows.iter().enumerate() {
+        let avg_tok = if *count > 0 { tokens / *count as u64 } else { 0 };
+        let avg_cost = if *count > 0 { cost / *count as f64 } else { 0.0 };
+        let ok_pct = if *count > 0 {
+            100.0 * *ok as f64 / *count as f64
+        } else {
+            0.0
+        };
+        println!(
+            " {:<3} {:<32} {:>11} {:>9} {:>10.4} {:>5.1}% {:>12}",
+            i + 1,
+            rid,
+            count,
+            avg_tok,
+            avg_cost,
+            ok_pct,
+            tokens,
+        );
+    }
+    println!("{}", "─".repeat(90));
+    println!(
+        "{} run(s) \u{2022} {} total delegations \u{2022} {} total tokens",
+        rows.len(),
+        total_delegations,
+        total_tokens
+    );
+
+    Ok(())
+}
+
 /// `ExportFormat::Csv`: emits a header row followed by one row per
 /// `DelegationEnd` event with columns:
 /// `run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp`
@@ -12412,6 +12521,87 @@ mod tests {
         ];
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_provider_duration_rank(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    // ── print_run_token_rank ───────────────────────────────────────────────
+
+    fn make_rtr_event(run_id: &str, agent: &str, tokens: u64, cost: f64, success: bool, ts: &str) -> String {
+        format!(
+            r#"{{"event_type":"DelegationEnd","run_id":"{run_id}","agent_name":"{agent}","tokens_used":{tokens},"cost_usd":{cost},"success":{success},"timestamp":"{ts}"}}"#
+        )
+    }
+
+    #[test]
+    fn print_run_token_rank_multiple_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        let lines = vec![
+            make_rtr_event("run-alpha", "agent-a", 20_000, 2.00, true,  "2026-02-01T10:00:00Z"),
+            make_rtr_event("run-beta",  "agent-b",  8_000, 0.80, true,  "2026-02-01T10:01:00Z"),
+            make_rtr_event("run-gamma", "agent-c",  2_000, 0.20, false, "2026-02-01T10:02:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_run_token_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_run_token_rank_empty_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_run_token_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_run_token_rank_missing_log() {
+        let path = std::path::PathBuf::from("/tmp/zeroclaw_rtr_missing_test.jsonl");
+        let result = print_run_token_rank(&path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_run_token_rank_skips_start_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        let start = r#"{"event_type":"DelegationStart","run_id":"run-only","agent_name":"agent-a","timestamp":"2026-02-01T10:00:00Z"}"#;
+        std::fs::write(&path, start.to_owned() + "\n").unwrap();
+        let result = print_run_token_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_run_token_rank_sorted_by_avg_tok_desc() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        // run-light: 1 del at 1k tok avg; run-heavy: 2 dels at 15k tok avg
+        let lines = vec![
+            make_rtr_event("run-light", "agent-a",  1_000, 0.10, true, "2026-02-01T10:00:00Z"),
+            make_rtr_event("run-heavy", "agent-b", 20_000, 2.00, true, "2026-02-01T10:01:00Z"),
+            make_rtr_event("run-heavy", "agent-c", 10_000, 1.00, true, "2026-02-01T10:02:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_run_token_rank(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_run_token_rank_filters_by_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.jsonl");
+        let lines = vec![
+            make_rtr_event("run-keep", "agent-a", 12_000, 1.20, true,  "2026-02-01T10:00:00Z"),
+            make_rtr_event("run-skip", "agent-b",  3_000, 0.30, false, "2026-02-01T10:01:00Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_run_token_rank(&path, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }
