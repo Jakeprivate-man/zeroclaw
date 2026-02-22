@@ -13,6 +13,7 @@
 //! - [`print_providers`]: per-provider breakdown table across all (or one) run.
 //! - [`print_depth`]: per-depth-level breakdown table across all (or one) run.
 //! - [`print_errors`]: list failed delegations with agent, duration, and error message.
+//! - [`print_slow`]: list the N slowest delegations ranked by duration descending.
 //! - [`get_log_summary`]: programmatic aggregate for `zeroclaw status`.
 //!
 //! All parsing is done via `serde_json::Value` — no new dependencies.
@@ -1293,6 +1294,119 @@ pub fn print_errors(log_path: &Path, run_id: Option<&str>) -> Result<()> {
 
     println!("{}", "─".repeat(90));
     println!("{} failed delegation(s) found.", failures.len());
+    Ok(())
+}
+
+/// List the N slowest completed delegations ranked by duration descending.
+///
+/// Reads `DelegationEnd` events, optionally filtered to a single run, then
+/// sorts by `duration_ms` descending and prints the top `limit` rows.
+///
+/// Columns: `#` | `run` (8-char prefix) | `agent` | `depth` | `duration` | `tokens` | `cost`
+pub fn print_slow(log_path: &Path, run_id: Option<&str>, limit: usize) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    let events: Vec<&Value> = if let Some(rid) = run_id {
+        all_events
+            .iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events.iter().collect()
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    // Collect all DelegationEnd events that have a duration.
+    let mut ends: Vec<&Value> = events
+        .iter()
+        .copied()
+        .filter(|e| {
+            e.get("event_type").and_then(|x| x.as_str()) == Some("DelegationEnd")
+                && e.get("duration_ms").and_then(|x| x.as_u64()).is_some()
+        })
+        .collect();
+
+    // Sort slowest first.
+    ends.sort_by(|a, b| {
+        let da = a.get("duration_ms").and_then(|x| x.as_u64()).unwrap_or(0);
+        let db = b.get("duration_ms").and_then(|x| x.as_u64()).unwrap_or(0);
+        db.cmp(&da)
+    });
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    let shown = ends.len().min(limit);
+    println!(
+        "Slowest Delegations{scope}  [showing {shown} of {}]",
+        ends.len()
+    );
+    println!();
+
+    if ends.is_empty() {
+        println!("No completed delegations found.");
+        return Ok(());
+    }
+
+    println!(
+        "{:>3}  {:<10}  {:<22}  {:>5}  {:>9}  {:>8}  {}",
+        "#", "run", "agent", "depth", "duration", "tokens", "cost"
+    );
+    println!("{}", "─".repeat(80));
+
+    for (i, ev) in ends.iter().take(limit).enumerate() {
+        let run = ev
+            .get("run_id")
+            .and_then(|x| x.as_str())
+            .map(|r| r.chars().take(8).collect::<String>())
+            .unwrap_or_else(|| "?".to_owned());
+        let agent = ev.get("agent_name").and_then(|x| x.as_str()).unwrap_or("?");
+        let depth = ev
+            .get("depth")
+            .and_then(|x| x.as_u64())
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| "?".to_owned());
+        let duration = ev
+            .get("duration_ms")
+            .and_then(|x| x.as_u64())
+            .map(fmt_duration)
+            .unwrap_or_else(|| "—".to_owned());
+        let tokens = ev
+            .get("tokens_used")
+            .and_then(|x| x.as_u64())
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "—".to_owned());
+        let cost = ev
+            .get("cost_usd")
+            .and_then(|x| x.as_f64())
+            .map(|c| format!("${c:.4}"))
+            .unwrap_or_else(|| "—".to_owned());
+        println!(
+            "{:>3}  {:<10}  {:<22}  {:>5}  {:>9}  {:>8}  {}",
+            i + 1,
+            run,
+            agent,
+            depth,
+            duration,
+            tokens,
+            cost,
+        );
+    }
+
+    println!("{}", "─".repeat(80));
+    println!(
+        "Top {shown} slowest of {} completed delegation(s).",
+        ends.len()
+    );
     Ok(())
 }
 
@@ -3367,5 +3481,150 @@ mod tests {
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         assert!(print_errors(&path, None).is_ok());
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ── print_slow tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn print_slow_on_missing_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_slow_missing.jsonl");
+        let _ = std::fs::remove_file(&path);
+        assert!(print_slow(&path, None, 10).is_ok());
+    }
+
+    #[test]
+    fn print_slow_on_empty_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_slow_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        assert!(print_slow(&path, None, 10).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_slow_with_no_ended_delegations_reports_empty() {
+        let path = std::env::temp_dir().join("zeroclaw_test_slow_noend.jsonl");
+        // Only DelegationStart events — no DelegationEnd.
+        let lines =
+            vec![
+                serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z"))
+                    .unwrap(),
+            ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_slow(&path, None, 10);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_slow_sorts_by_duration_descending() {
+        let path = std::env::temp_dir().join("zeroclaw_test_slow_sort.jsonl");
+        // Three delegations with durations 500ms, 2000ms, 300ms.
+        // Expected order after sort: 2000ms, 500ms, 300ms.
+        let events = [
+            make_start("run-a", "fast", 0, "2026-01-01T10:00:00Z"),
+            serde_json::json!({
+                "event_type": "DelegationEnd", "run_id": "run-a",
+                "agent_name": "fast", "provider": "anthropic",
+                "model": "claude-sonnet-4", "depth": 0u32,
+                "duration_ms": 300u64, "success": true,
+                "tokens_used": 100u64, "cost_usd": 0.001,
+                "timestamp": "2026-01-01T10:00:01Z"
+            }),
+            make_start("run-a", "medium", 1, "2026-01-01T10:00:00Z"),
+            serde_json::json!({
+                "event_type": "DelegationEnd", "run_id": "run-a",
+                "agent_name": "medium", "provider": "anthropic",
+                "model": "claude-sonnet-4", "depth": 1u32,
+                "duration_ms": 500u64, "success": true,
+                "tokens_used": 200u64, "cost_usd": 0.002,
+                "timestamp": "2026-01-01T10:00:02Z"
+            }),
+            make_start("run-a", "slow_agent", 2, "2026-01-01T10:00:00Z"),
+            serde_json::json!({
+                "event_type": "DelegationEnd", "run_id": "run-a",
+                "agent_name": "slow_agent", "provider": "anthropic",
+                "model": "claude-sonnet-4", "depth": 2u32,
+                "duration_ms": 2000u64, "success": true,
+                "tokens_used": 400u64, "cost_usd": 0.004,
+                "timestamp": "2026-01-01T10:00:03Z"
+            }),
+        ];
+        let lines: Vec<String> = events
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap())
+            .collect();
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert!(print_slow(&path, None, 10).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_slow_respects_limit() {
+        let path = std::env::temp_dir().join("zeroclaw_test_slow_limit.jsonl");
+        // Five delegations — limit 2 should only show top 2.
+        let durations: &[u64] = &[100, 500, 300, 800, 200];
+        let mut lines = Vec::new();
+        for (i, dur) in durations.iter().enumerate() {
+            let agent = format!("agent_{i}");
+            lines.push(
+                serde_json::to_string(&make_start("run-a", &agent, 0, "2026-01-01T10:00:00Z"))
+                    .unwrap(),
+            );
+            lines.push(
+                serde_json::to_string(&serde_json::json!({
+                    "event_type": "DelegationEnd", "run_id": "run-a",
+                    "agent_name": agent, "provider": "anthropic",
+                    "model": "claude-sonnet-4", "depth": 0u32,
+                    "duration_ms": dur, "success": true,
+                    "tokens_used": 100u64, "cost_usd": 0.001,
+                    "timestamp": "2026-01-01T10:00:01Z"
+                }))
+                .unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert!(print_slow(&path, None, 2).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_slow_filters_by_run() {
+        let path = std::env::temp_dir().join("zeroclaw_test_slow_run_filter.jsonl");
+        let mut lines = Vec::new();
+        // run-keep has a slow delegation; run-skip has a faster one.
+        lines.push(
+            serde_json::to_string(&make_start("run-keep", "main", 0, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&serde_json::json!({
+                "event_type": "DelegationEnd", "run_id": "run-keep",
+                "agent_name": "main", "provider": "anthropic",
+                "model": "claude-sonnet-4", "depth": 0u32,
+                "duration_ms": 5000u64, "success": true,
+                "tokens_used": 300u64, "cost_usd": 0.003,
+                "timestamp": "2026-01-01T10:00:05Z"
+            }))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-skip", "other", 0, "2026-01-02T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&serde_json::json!({
+                "event_type": "DelegationEnd", "run_id": "run-skip",
+                "agent_name": "other", "provider": "anthropic",
+                "model": "claude-sonnet-4", "depth": 0u32,
+                "duration_ms": 100u64, "success": true,
+                "tokens_used": 50u64, "cost_usd": 0.0005,
+                "timestamp": "2026-01-02T10:00:01Z"
+            }))
+            .unwrap(),
+        );
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_slow(&path, Some("run-keep"), 10);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
     }
 }
