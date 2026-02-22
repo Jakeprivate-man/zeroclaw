@@ -354,6 +354,9 @@ def render() -> None:
         # Provider token rank table (scoped to selected run when set)
         delegation_charts.render_provider_token_rank_table(run_id=selected_run_id)
 
+        # Run token rank table (scoped to selected run when set)
+        delegation_charts.render_run_token_rank_table(run_id=selected_run_id)
+
         # Agent duration rank table (scoped to selected run when set)
         delegation_charts.render_agent_duration_rank_table(run_id=selected_run_id)
 
