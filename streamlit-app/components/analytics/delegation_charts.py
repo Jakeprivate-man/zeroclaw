@@ -2214,6 +2214,141 @@ def render_depth_view_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_daily_breakdown_table(run_id: Optional[str] = None) -> None:
+    """Per-calendar-day delegation breakdown table.
+
+    Mirrors ``zeroclaw delegations daily [--run <id>]`` as a Streamlit
+    dataframe. Groups all completed delegations by UTC calendar date and
+    shows aggregate statistics per day, sorted oldest day first.
+
+    Unlike the filter tables (agent/model/provider/run/depth-view), this is
+    an aggregate table: each row represents a full day, not an individual
+    delegation. No additional input control is needed — the shared run
+    selector already provides scope.
+
+    Columns: Date | Count | Ok% | Tokens | Cost ($)
+
+    A caption below the table summarises total days, total delegations,
+    total successes, and cumulative cost — mirroring the CLI footer line.
+
+    Falls back to a synthetic mock example when no real data is present.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` aggregates all runs.
+    """
+    import pandas as pd
+
+    scope = f"[{run_id[:8]}…]" if run_id is not None else "(all runs)"
+    st.markdown(f"#### Daily Delegation Breakdown {scope}")
+
+    parser = DelegationParser()
+    events = parser._read_events(run_id)
+
+    if not events:
+        st.caption("No delegation data available — showing mock example")
+        rows = [
+            {
+                "Date": "2026-02-20",
+                "Count": 14,
+                "Ok%": "92.9%",
+                "Tokens": 8_420,
+                "Cost ($)": "$0.0252",
+            },
+            {
+                "Date": "2026-02-21",
+                "Count": 22,
+                "Ok%": "100.0%",
+                "Tokens": 13_110,
+                "Cost ($)": "$0.0393",
+            },
+            {
+                "Date": "2026-02-22",
+                "Count": 9,
+                "Ok%": "88.9%",
+                "Tokens": 5_340,
+                "Cost ($)": "$0.0160",
+            },
+        ]
+        df = pd.DataFrame(rows)
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Date": st.column_config.TextColumn("Date", width="small"),
+                "Count": st.column_config.NumberColumn("Count", format="%d"),
+                "Ok%": st.column_config.TextColumn("Ok%", width="small"),
+                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
+            },
+        )
+        st.caption("3 day(s) • 45 total delegations • 43 succeeded • $0.0805 total cost (mock)")
+        return
+
+    # Collect completed delegations, group by UTC calendar date.
+    day_stats: dict[str, list[float, int, float]] = {}
+    # day_stats[date_str] = [count, success_count, tokens, cost]
+    for ev in events:
+        if ev.get("event_type") != "DelegationEnd":
+            continue
+        ts = ev.get("timestamp", "")
+        date_str = ts[:10] if len(ts) >= 10 else "unknown"
+        ok = bool(ev.get("success", False))
+        tokens = int(ev.get("tokens_used") or 0)
+        cost = float(ev.get("cost_usd") or 0.0)
+        if date_str not in day_stats:
+            day_stats[date_str] = [0, 0, 0, 0.0]
+        day_stats[date_str][0] += 1
+        if ok:
+            day_stats[date_str][1] += 1
+        day_stats[date_str][2] += tokens
+        day_stats[date_str][3] += cost
+
+    if not day_stats:
+        st.caption("No completed delegations found in the selected scope.")
+        return
+
+    # Sort oldest-first: ISO date strings sort correctly lexicographically.
+    sorted_dates = sorted(day_stats.keys())
+
+    rows = []
+    total_delegations = 0
+    total_success = 0
+    total_cost = 0.0
+    for date_str in sorted_dates:
+        count, success_count, tokens, cost = day_stats[date_str]
+        ok_pct = f"{100.0 * success_count / count:.1f}%" if count > 0 else "—"
+        rows.append({
+            "Date": date_str,
+            "Count": count,
+            "Ok%": ok_pct,
+            "Tokens": tokens,
+            "Cost ($)": f"${cost:.4f}",
+        })
+        total_delegations += count
+        total_success += success_count
+        total_cost += cost
+
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Date": st.column_config.TextColumn("Date", width="small"),
+            "Count": st.column_config.NumberColumn("Count", format="%d"),
+            "Ok%": st.column_config.TextColumn("Ok%", width="small"),
+            "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+            "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
+        },
+    )
+    n_days = len(sorted_dates)
+    st.caption(
+        f"{n_days} day(s)  •  {total_delegations} total delegations  "
+        f"•  {total_success} succeeded  •  ${total_cost:.4f} total cost"
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
