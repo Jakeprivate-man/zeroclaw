@@ -16,6 +16,7 @@
 //! - [`print_slow`]: list the N slowest delegations ranked by duration descending.
 //! - [`print_cost`]: per-run cost breakdown table sorted by total cost descending.
 //! - [`print_recent`]: list the N most recently completed delegations, newest first.
+//! - [`print_active`]: list currently in-flight delegations (starts without matching ends).
 //! - [`get_log_summary`]: programmatic aggregate for `zeroclaw status`.
 //!
 //! All parsing is done via `serde_json::Value` — no new dependencies.
@@ -1674,6 +1675,158 @@ pub fn print_recent(log_path: &Path, run_id: Option<&str>, limit: usize) -> Resu
         "Top {shown} most recent of {} completed delegation(s).",
         ends.len()
     );
+    Ok(())
+}
+
+/// List currently in-flight delegations — `DelegationStart` events that have
+/// no matching `DelegationEnd` in the log yet.
+///
+/// Matches starts to ends FIFO per `(run_id, agent_name, depth)` key so that
+/// the correct unmatched starts are surfaced when an agent is delegated more
+/// than once within the same run at the same depth.
+///
+/// Sorted oldest-start first so the longest-running delegation appears at the
+/// top.  When `run_id` is `Some`, only events from that run are considered.
+pub fn print_active(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    let events: Vec<&Value> = if let Some(rid) = run_id {
+        all_events
+            .iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events.iter().collect()
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    // FIFO match: for each (run_id, agent_name, depth) key, pair each start
+    // with the corresponding end by insertion order.  Unmatched starts are
+    // the currently active (in-flight) delegations.
+    type Key = (String, String, u32);
+    let mut start_queues: HashMap<Key, Vec<&Value>> = HashMap::new();
+    let mut end_counts: HashMap<Key, usize> = HashMap::new();
+
+    for ev in &events {
+        let etype = ev.get("event_type").and_then(|x| x.as_str()).unwrap_or("");
+        let rid = ev
+            .get("run_id")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let agent = ev
+            .get("agent_name")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let depth = ev.get("depth").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+        let key = (rid, agent, depth);
+        match etype {
+            "DelegationStart" => {
+                start_queues.entry(key).or_default().push(ev);
+            }
+            "DelegationEnd" => {
+                *end_counts.entry(key).or_default() += 1;
+            }
+            _ => {}
+        }
+    }
+
+    // Collect unmatched starts.
+    let mut active: Vec<&Value> = Vec::new();
+    for (key, starts) in &start_queues {
+        let matched = *end_counts.get(key).unwrap_or(&0);
+        for start in starts.iter().skip(matched) {
+            active.push(start);
+        }
+    }
+
+    // Sort oldest-start first (ascending ISO-8601 timestamp).
+    active.sort_by(|a, b| {
+        let ta = a.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
+        let tb = b.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
+        ta.cmp(tb)
+    });
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!("Active Delegations{scope}  [{} in-flight]", active.len());
+    println!();
+
+    if active.is_empty() {
+        println!("No active (in-flight) delegations found.");
+        return Ok(());
+    }
+
+    let now = Utc::now();
+    println!(
+        "{:>3}  {:<10}  {:<22}  {:>5}  {:<20}  {}",
+        "#", "run", "agent", "depth", "started (UTC)", "elapsed"
+    );
+    println!("{}", "─".repeat(80));
+
+    for (i, ev) in active.iter().enumerate() {
+        let run = ev
+            .get("run_id")
+            .and_then(|x| x.as_str())
+            .map(|r| r.chars().take(8).collect::<String>())
+            .unwrap_or_else(|| "?".to_owned());
+        let agent = ev.get("agent_name").and_then(|x| x.as_str()).unwrap_or("?");
+        let depth = ev
+            .get("depth")
+            .and_then(|x| x.as_u64())
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| "?".to_owned());
+        let started_dt = ev
+            .get("timestamp")
+            .and_then(|x| x.as_str())
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok());
+        let started = started_dt
+            .as_ref()
+            .map(|dt| {
+                dt.with_timezone(&Utc)
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "?".to_owned());
+        let elapsed = started_dt
+            .map(|dt| {
+                let secs = now
+                    .signed_duration_since(dt.with_timezone(&Utc))
+                    .num_seconds()
+                    .max(0);
+                if secs < 60 {
+                    format!("{secs}s")
+                } else if secs < 3600 {
+                    format!("{}m{}s", secs / 60, secs % 60)
+                } else {
+                    format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+                }
+            })
+            .unwrap_or_else(|| "?".to_owned());
+        println!(
+            "{:>3}  {:<10}  {:<22}  {:>5}  {:<20}  {}",
+            i + 1,
+            run,
+            agent,
+            depth,
+            started,
+            elapsed,
+        );
+    }
+
+    println!("{}", "─".repeat(80));
+    println!("{} active (in-flight) delegation(s).", active.len());
     Ok(())
 }
 
@@ -4143,6 +4296,110 @@ mod tests {
         }
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_recent(&path, Some("run-keep"), 10);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_active_on_missing_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_active_missing.jsonl");
+        let _ = std::fs::remove_file(&path);
+        assert!(print_active(&path, None).is_ok());
+    }
+
+    #[test]
+    fn print_active_on_empty_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_active_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        assert!(print_active(&path, None).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_active_with_only_ends_reports_empty() {
+        // DelegationEnd with no prior start — should show 0 active.
+        let path = std::env::temp_dir().join("zeroclaw_test_active_onlyends.jsonl");
+        let lines = vec![serde_json::to_string(&make_end(
+            "run-a",
+            "main",
+            0,
+            "2026-01-01T10:00:01Z",
+            100,
+            0.001,
+            true,
+        ))
+        .unwrap()];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_active(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_active_shows_unmatched_starts() {
+        // One start with no matching end — should surface as 1 active.
+        let path = std::env::temp_dir().join("zeroclaw_test_active_unmatched.jsonl");
+        let lines = vec![serde_json::to_string(&make_start(
+            "run-a",
+            "research",
+            1,
+            "2026-01-01T10:00:00Z",
+        ))
+        .unwrap()];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_active(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_active_excludes_completed_delegations() {
+        // A start+end pair for the same key — matched, so 0 active.
+        let path = std::env::temp_dir().join("zeroclaw_test_active_completed.jsonl");
+        let lines = vec![
+            serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z")).unwrap(),
+            serde_json::to_string(&make_end(
+                "run-a",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                5000,
+                0.002,
+                true,
+            ))
+            .unwrap(),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_active(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_active_filters_by_run() {
+        let path = std::env::temp_dir().join("zeroclaw_test_active_filter.jsonl");
+        let mut lines = Vec::new();
+        // run-a: start only (active), run-b: start+end (completed)
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-b", "main", 0, "2026-01-01T10:00:00Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-b",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                5000,
+                0.002,
+                true,
+            ))
+            .unwrap(),
+        );
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_active(&path, Some("run-a"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }
