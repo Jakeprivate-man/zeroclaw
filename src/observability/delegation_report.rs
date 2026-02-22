@@ -12,6 +12,7 @@
 //! - [`print_models`]: per-model breakdown table across all (or one) run.
 //! - [`print_providers`]: per-provider breakdown table across all (or one) run.
 //! - [`print_depth`]: per-depth-level breakdown table across all (or one) run.
+//! - [`print_errors`]: list failed delegations with agent, duration, and error message.
 //! - [`get_log_summary`]: programmatic aggregate for `zeroclaw status`.
 //!
 //! All parsing is done via `serde_json::Value` — no new dependencies.
@@ -1188,6 +1189,110 @@ pub fn print_depth(log_path: &Path, run_id: Option<&str>) -> Result<()> {
     );
     println!();
     println!("Use `--run <id>` to scope to a single run.");
+    Ok(())
+}
+
+/// List all failed delegations with agent, depth, duration, and error message.
+///
+/// Filters `DelegationEnd` events where `success` is `false`, ordered by
+/// timestamp ascending (oldest failure first). When `run_id` is `Some`, only
+/// events from that run are shown. Error messages are truncated to 80 chars.
+pub fn print_errors(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    let events: Vec<&Value> = if let Some(rid) = run_id {
+        all_events
+            .iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events.iter().collect()
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    // Collect failed DelegationEnd events.
+    let mut failures: Vec<&Value> = events
+        .iter()
+        .copied()
+        .filter(|e| {
+            e.get("event_type").and_then(|x| x.as_str()) == Some("DelegationEnd")
+                && !e.get("success").and_then(|x| x.as_bool()).unwrap_or(true)
+        })
+        .collect();
+
+    // Sort by timestamp ascending (oldest failure first).
+    failures.sort_by(|a, b| {
+        let ta = a.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
+        let tb = b.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
+        ta.cmp(tb)
+    });
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!("Failed Delegations{scope}");
+    println!();
+
+    if failures.is_empty() {
+        println!("No failed delegations found.");
+        return Ok(());
+    }
+
+    println!(
+        "{:>3}  {:<10}  {:<22}  {:>5}  {:>9}  {}",
+        "#", "run", "agent", "depth", "duration", "error"
+    );
+    println!("{}", "─".repeat(90));
+
+    for (i, ev) in failures.iter().enumerate() {
+        let run = ev
+            .get("run_id")
+            .and_then(|x| x.as_str())
+            .map(|r| r.chars().take(8).collect::<String>())
+            .unwrap_or_else(|| "?".to_owned());
+        let agent = ev.get("agent_name").and_then(|x| x.as_str()).unwrap_or("?");
+        let depth = ev
+            .get("depth")
+            .and_then(|x| x.as_u64())
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| "?".to_owned());
+        let duration = ev
+            .get("duration_ms")
+            .and_then(|x| x.as_u64())
+            .map(fmt_duration)
+            .unwrap_or_else(|| "—".to_owned());
+        let error = ev
+            .get("error_message")
+            .and_then(|x| x.as_str())
+            .unwrap_or("(no message)");
+        // Truncate long error messages.
+        let error_display = if error.len() > 80 {
+            format!("{}…", &error[..79])
+        } else {
+            error.to_owned()
+        };
+        println!(
+            "{:>3}  {:<10}  {:<22}  {:>5}  {:>9}  {}",
+            i + 1,
+            run,
+            agent,
+            depth,
+            duration,
+            error_display,
+        );
+    }
+
+    println!("{}", "─".repeat(90));
+    println!("{} failed delegation(s) found.", failures.len());
     Ok(())
 }
 
@@ -3103,6 +3208,164 @@ mod tests {
         );
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         assert!(print_depth(&path, None).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn make_end_failed(run_id: &str, agent: &str, depth: u32, ts: &str, error_msg: &str) -> Value {
+        serde_json::json!({
+            "event_type": "DelegationEnd",
+            "run_id": run_id,
+            "agent_name": agent,
+            "provider": "anthropic",
+            "model": "claude-sonnet-4",
+            "depth": depth,
+            "duration_ms": 500u64,
+            "success": false,
+            "error_message": error_msg,
+            "tokens_used": null,
+            "cost_usd": null,
+            "timestamp": ts
+        })
+    }
+
+    #[test]
+    fn print_errors_on_missing_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_errors_missing.jsonl");
+        let _ = std::fs::remove_file(&path);
+        assert!(print_errors(&path, None).is_ok());
+    }
+
+    #[test]
+    fn print_errors_on_empty_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_errors_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        assert!(print_errors(&path, None).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_errors_with_no_failures_reports_clean() {
+        let path = std::env::temp_dir().join("zeroclaw_test_errors_clean.jsonl");
+        let mut lines = Vec::new();
+        // Only successful delegations — no failures.
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                500,
+                0.001,
+                true,
+            ))
+            .unwrap(),
+        );
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_errors(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_errors_lists_failed_delegations() {
+        let path = std::env::temp_dir().join("zeroclaw_test_errors_failed.jsonl");
+        let mut lines = Vec::new();
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end_failed(
+                "run-a",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                "tool not found",
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "sub", 1, "2026-01-01T10:00:01Z")).unwrap(),
+        );
+        // sub succeeds — should not appear in errors list.
+        lines.push(
+            serde_json::to_string(&make_end(
+                "run-a",
+                "sub",
+                1,
+                "2026-01-01T10:00:04Z",
+                200,
+                0.0005,
+                true,
+            ))
+            .unwrap(),
+        );
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_errors(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_errors_with_run_filter_excludes_other_runs() {
+        let path = std::env::temp_dir().join("zeroclaw_test_errors_filter.jsonl");
+        let mut lines = Vec::new();
+        lines.push(
+            serde_json::to_string(&make_start("run-keep", "main", 0, "2026-01-01T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end_failed(
+                "run-keep",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                "timeout",
+            ))
+            .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_start("run-skip", "other", 0, "2026-01-02T10:00:00Z"))
+                .unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end_failed(
+                "run-skip",
+                "other",
+                0,
+                "2026-01-02T10:00:05Z",
+                "other error",
+            ))
+            .unwrap(),
+        );
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_errors(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_errors_truncates_long_error_messages() {
+        let path = std::env::temp_dir().join("zeroclaw_test_errors_truncate.jsonl");
+        let mut lines = Vec::new();
+        let long_msg = "x".repeat(200);
+        lines.push(
+            serde_json::to_string(&make_start("run-a", "main", 0, "2026-01-01T10:00:00Z")).unwrap(),
+        );
+        lines.push(
+            serde_json::to_string(&make_end_failed(
+                "run-a",
+                "main",
+                0,
+                "2026-01-01T10:00:05Z",
+                &long_msg,
+            ))
+            .unwrap(),
+        );
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert!(print_errors(&path, None).is_ok());
         let _ = std::fs::remove_file(&path);
     }
 }
