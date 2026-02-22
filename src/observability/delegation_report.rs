@@ -2933,6 +2933,139 @@ pub fn print_monthly(log_path: &Path, run_id: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Aggregate completed delegations by UTC calendar quarter (YYYY-QN) and
+/// print a breakdown table, sorted oldest-quarter first.
+///
+/// Only `DelegationEnd` events are counted.  The quarter is derived from
+/// the month digits in the ISO-8601 timestamp (characters 5–6):
+///   01–03 → Q1 · 04–06 → Q2 · 07–09 → Q3 · 10–12 → Q4
+///
+/// Events with a timestamp shorter than 7 chars or an unrecognised month
+/// are skipped.  Use `run_id` to scope to a single run; `None` aggregates
+/// across every stored run.
+///
+/// Output columns: quarter | count | ok% | tokens | cost
+pub fn print_quarterly(log_path: &Path, run_id: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    let events: Vec<&Value> = if let Some(rid) = run_id {
+        all_events
+            .iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events.iter().collect()
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    // Aggregate DelegationEnd events by UTC quarter.
+    let mut map: std::collections::BTreeMap<String, (usize, usize, u64, f64)> =
+        std::collections::BTreeMap::new();
+
+    for ev in &events {
+        if ev.get("event_type").and_then(|x| x.as_str()) != Some("DelegationEnd") {
+            continue;
+        }
+        let Some(ts) = ev.get("timestamp").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        if ts.len() < 7 {
+            continue;
+        }
+        let year = &ts[..4];
+        let month_str = &ts[5..7];
+        let quarter = match month_str {
+            "01" | "02" | "03" => 1u8,
+            "04" | "05" | "06" => 2,
+            "07" | "08" | "09" => 3,
+            "10" | "11" | "12" => 4,
+            _ => continue,
+        };
+        let key = format!("{year}-Q{quarter}");
+        let success = ev
+            .get("success")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+        let tokens = ev
+            .get("tokens_used")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        let cost = ev
+            .get("cost_usd")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0);
+        let entry = map.entry(key).or_insert((0usize, 0usize, 0u64, 0.0f64));
+        entry.0 += 1;
+        if success {
+            entry.1 += 1;
+        }
+        entry.2 += tokens;
+        entry.3 += cost;
+    }
+
+    if map.is_empty() {
+        println!("No completed delegations found.");
+        return Ok(());
+    }
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!("Quarterly Delegation Breakdown{scope}");
+    println!();
+    println!(
+        "{:<7}  {:>7}  {:>8}  {:>10}  {:>10}",
+        "quarter", "count", "ok%", "tokens", "cost"
+    );
+    println!("{}", "─".repeat(50));
+
+    let mut total_count = 0usize;
+    let mut total_success = 0usize;
+    let mut total_tokens: u64 = 0;
+    let mut total_cost: f64 = 0.0;
+
+    for (quarter, (count, success_count, tokens, cost)) in &map {
+        let ok_pct = format!("{:.1}%", 100.0 * (*success_count) as f64 / (*count) as f64);
+        let tok_str = if *tokens > 0 {
+            tokens.to_string()
+        } else {
+            "—".to_owned()
+        };
+        let cost_str = if *cost > 0.0 {
+            format!("${cost:.4}")
+        } else {
+            "—".to_owned()
+        };
+        println!(
+            "{:<7}  {:>7}  {:>8}  {:>10}  {:>10}",
+            quarter, count, ok_pct, tok_str, cost_str,
+        );
+        total_count += count;
+        total_success += success_count;
+        total_tokens += tokens;
+        total_cost += cost;
+    }
+
+    println!("{}", "─".repeat(50));
+    println!(
+        "{} quarter(s)  •  {} total delegations  •  {} succeeded  •  ${:.4} total cost",
+        map.len(),
+        total_count,
+        total_success,
+        total_cost,
+    );
+    Ok(())
+}
+
 /// `ExportFormat::Csv`: emits a header row followed by one row per
 /// `DelegationEnd` event with columns:
 /// `run_id,agent_name,model,depth,duration_ms,tokens_used,cost_usd,success,timestamp`
@@ -6401,6 +6534,98 @@ mod tests {
         }
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_monthly(&path, Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    // ── print_quarterly tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn print_quarterly_missing_log() {
+        let path = std::env::temp_dir().join("zeroclaw_test_quarterly_missing.jsonl");
+        let _ = std::fs::remove_file(&path);
+        let result = print_quarterly(&path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_quarterly_empty_log() {
+        let path = std::env::temp_dir().join("zeroclaw_test_quarterly_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let result = print_quarterly(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_quarterly_no_ends() {
+        let path = std::env::temp_dir().join("zeroclaw_test_quarterly_noends.jsonl");
+        let start = serde_json::json!({
+            "event_type": "DelegationStart",
+            "run_id": "run-a",
+            "agent_name": "research",
+            "depth": 0,
+            "timestamp": "2026-01-01T10:00:00Z"
+        });
+        std::fs::write(&path, serde_json::to_string(&start).unwrap() + "\n").unwrap();
+        let result = print_quarterly(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_quarterly_groups_by_quarter() {
+        let path = std::env::temp_dir().join("zeroclaw_test_quarterly_groups.jsonl");
+        let mut lines = Vec::new();
+        // Jan + Feb → Q1, Jul → Q3.
+        for ts in &[
+            "2026-01-10T09:00:00Z",
+            "2026-02-20T11:00:00Z",
+            "2026-07-05T10:00:00Z",
+        ] {
+            lines.push(
+                serde_json::to_string(&make_end("run-a", "research", 0, ts, 100, 0.001, true))
+                    .unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_quarterly(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_quarterly_oldest_first() {
+        let path = std::env::temp_dir().join("zeroclaw_test_quarterly_oldest.jsonl");
+        let mut lines = Vec::new();
+        // Write Q4 before Q1 — BTreeMap key "2026-Q1" < "2026-Q4".
+        for ts in &["2026-10-01T10:00:00Z", "2026-01-01T10:00:00Z"] {
+            lines.push(
+                serde_json::to_string(&make_end("run-a", "research", 0, ts, 100, 0.001, true))
+                    .unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_quarterly(&path, None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_quarterly_filters_by_run() {
+        let path = std::env::temp_dir().join("zeroclaw_test_quarterly_runfilter.jsonl");
+        let mut lines = Vec::new();
+        for (run, ts) in &[
+            ("run-keep", "2026-01-01T10:00:00Z"),
+            ("run-skip", "2026-04-01T10:00:00Z"),
+        ] {
+            lines.push(
+                serde_json::to_string(&make_end(run, "research", 0, ts, 100, 0.001, true))
+                    .unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_quarterly(&path, Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }
