@@ -1039,6 +1039,12 @@ Examples:
         #[arg(long)]
         run: Option<String>,
     },
+    /// Show delegation counts, success rate, token usage, and cost grouped by day of month
+    DayOfMonth {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
 Compare per-agent delegation statistics between two runs side-by-side.
@@ -1828,6 +1834,12 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::TimeOfDay { run }) => {
                     observability::delegation_report::print_time_of_day(
+                        &log_path,
+                        run.as_deref(),
+                    )
+                }
+                Some(DelegationCommands::DayOfMonth { run }) => {
+                    observability::delegation_report::print_day_of_month(
                         &log_path,
                         run.as_deref(),
                     )
