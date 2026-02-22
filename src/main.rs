@@ -1129,6 +1129,12 @@ Examples:
         #[arg(long)]
         run: Option<String>,
     },
+    /// Rank providers by avg duration per delegation (slowest first)
+    ProviderDurationRank {
+        /// Scope to a specific run ID (default: aggregate across all runs)
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Compare per-agent stats between two runs side by side
     #[command(long_about = "\
 Compare per-agent delegation statistics between two runs side-by-side.
@@ -2008,6 +2014,12 @@ async fn main() -> Result<()> {
                 }
                 Some(DelegationCommands::ModelDurationRank { run }) => {
                     observability::delegation_report::print_model_duration_rank(
+                        &log_path,
+                        run.as_deref(),
+                    )
+                }
+                Some(DelegationCommands::ProviderDurationRank { run }) => {
+                    observability::delegation_report::print_provider_duration_rank(
                         &log_path,
                         run.as_deref(),
                     )
