@@ -3454,6 +3454,134 @@ def render_token_bucket_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_cost_bucket_table(run_id: Optional[str] = None) -> None:
+    """Cost-bucket histogram table — delegations grouped by cost tier.
+
+    Mirrors ``zeroclaw delegations cost-bucket [--run <id>]`` as a
+    Streamlit dataframe.  Groups all completed delegations into five
+    fixed-width cost buckets and shows aggregate statistics per bucket,
+    ordered cheapest-first.  Empty buckets are omitted.
+
+    Bucket boundaries:
+      micro   < $0.001
+      small   $0.001 \u2013 $0.01
+      medium  $0.01 \u2013 $0.10
+      large   $0.10 \u2013 $1.00
+      xlarge  \u2265 $1.00
+
+    Columns: Bucket | Count | Ok% | Tokens | Cost ($)
+
+    A caption below summarises populated bucket count, total delegations,
+    successes, and cumulative cost \u2014 mirroring the CLI footer line.
+
+    Falls back to a synthetic mock example when no real data is present.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` aggregates all runs.
+    """
+    import pandas as pd
+
+    scope = f"[{run_id[:8]}\u2026]" if run_id is not None else "(all runs)"
+    st.markdown(f"#### Cost Bucket Breakdown {scope}")
+
+    _BUCKETS = [
+        ("<$0.001",           0.0,   0.001),
+        ("$0.001\u2013$0.01", 0.001, 0.01),
+        ("$0.01\u2013$0.10",  0.01,  0.10),
+        ("$0.10\u2013$1.00",  0.10,  1.00),
+        ("\u2265$1.00",       1.00,  float("inf")),
+    ]
+
+    parser = DelegationParser()
+    events = parser._read_events(run_id)
+
+    if not events:
+        st.caption("No delegation data available \u2014 showing mock example")
+        rows = [
+            {"Bucket": "<$0.001",           "Count": 18, "Ok%": "100.0%", "Tokens": 5_400,  "Cost ($)": "$0.0090"},
+            {"Bucket": "$0.001\u2013$0.01", "Count": 27, "Ok%": "96.3%",  "Tokens": 54_000, "Cost ($)": "$0.1620"},
+            {"Bucket": "$0.01\u2013$0.10",  "Count": 11, "Ok%": "90.9%",  "Tokens": 66_000, "Cost ($)": "$0.5280"},
+        ]
+        df = pd.DataFrame(rows)
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Bucket": st.column_config.TextColumn("Bucket", width="small"),
+                "Count": st.column_config.NumberColumn("Count", format="%d"),
+                "Ok%": st.column_config.TextColumn("Ok%", width="small"),
+                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
+            },
+        )
+        st.caption(
+            "3 bucket(s) populated  \u2022  56 total delegations  "
+            "\u2022  54 succeeded  \u2022  $0.6990 total cost (mock)"
+        )
+        return
+
+    # Accumulate per bucket: [count, success_count, tokens, cost]
+    bucket_stats = [[0, 0, 0, 0.0] for _ in _BUCKETS]
+    for ev in events:
+        if ev.get("event_type") != "DelegationEnd":
+            continue
+        cost_usd = float(ev.get("cost_usd") or 0.0)
+        ok = bool(ev.get("success", False))
+        tokens = int(ev.get("tokens_used") or 0)
+        for i, (_, lo, hi) in enumerate(_BUCKETS):
+            if lo <= cost_usd < hi:
+                bucket_stats[i][0] += 1
+                if ok:
+                    bucket_stats[i][1] += 1
+                bucket_stats[i][2] += tokens
+                bucket_stats[i][3] += cost_usd
+                break
+
+    rows = []
+    total_delegations = 0
+    total_success = 0
+    total_cost = 0.0
+    populated = 0
+    for (label, _, _), (count, success_count, tokens, cost) in zip(_BUCKETS, bucket_stats):
+        if count == 0:
+            continue
+        populated += 1
+        ok_pct = f"{100.0 * success_count / count:.1f}%"
+        rows.append({
+            "Bucket": label,
+            "Count": count,
+            "Ok%": ok_pct,
+            "Tokens": tokens,
+            "Cost ($)": f"${cost:.4f}",
+        })
+        total_delegations += count
+        total_success += success_count
+        total_cost += cost
+
+    if not rows:
+        st.caption("No completed delegations found in the selected scope.")
+        return
+
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Bucket": st.column_config.TextColumn("Bucket", width="small"),
+            "Count": st.column_config.NumberColumn("Count", format="%d"),
+            "Ok%": st.column_config.TextColumn("Ok%", width="small"),
+            "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+            "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
+        },
+    )
+    st.caption(
+        f"{populated} bucket(s) populated  \u2022  {total_delegations} total delegations  "
+        f"\u2022  {total_success} succeeded  \u2022  ${total_cost:.4f} total cost"
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 

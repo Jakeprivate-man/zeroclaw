@@ -294,6 +294,9 @@ def render() -> None:
         # Token bucket histogram table (scoped to selected run when set)
         delegation_charts.render_token_bucket_table(run_id=selected_run_id)
 
+        # Cost bucket histogram table (scoped to selected run when set)
+        delegation_charts.render_cost_bucket_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
@@ -506,6 +509,15 @@ def render() -> None:
               cumulative cost; mirrors `zeroclaw delegations token-bucket`; scoped
               by the shared run selector; shows a mock example when no real log data
               is available
+            - **Cost Bucket table** — groups completed delegations into five
+              fixed-width cost tiers (&lt;$0.001, $0.001–$0.01, $0.01–$0.10,
+              $0.10–$1.00, ≥$1.00); columns show bucket label, count, success
+              percentage, cumulative tokens, and cumulative cost; buckets are shown
+              in cheapest-to-most-expensive order and empty buckets are omitted; a
+              caption line below summarises populated bucket count, total delegations,
+              total successes, and cumulative cost; mirrors
+              `zeroclaw delegations cost-bucket`; scoped by the shared run selector;
+              shows a mock example when no real log data is available
             - **Agent Leaderboard** — horizontal bar chart ranking all agents by
               cumulative tokens or cost across every stored run; rank-by and top-N
               controls mirror `zeroclaw delegations top`; falls back to a mock
