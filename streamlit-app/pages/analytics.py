@@ -243,6 +243,9 @@ def render() -> None:
         # Slow table — N slowest delegations by duration (scoped to selected run when set)
         delegation_charts.render_slow_table(run_id=selected_run_id)
 
+        # Cost breakdown table — per-run cost sorted descending (scoped to selected run when set)
+        delegation_charts.render_cost_breakdown_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
@@ -322,6 +325,11 @@ def render() -> None:
               how many rows to show (default: 10, matches CLI `--limit`); columns
               show run prefix, agent, depth, duration in ms, tokens, and cost;
               mirrors `zeroclaw delegations slow`; scoped by the shared run selector
+            - **Cost Breakdown table** — one row per stored run sorted by total
+              cost descending (most expensive first); columns show run prefix,
+              start time, delegation count, tokens, total cost, and average cost
+              per completed delegation; mirrors `zeroclaw delegations cost`;
+              scoped by the shared run selector
             - **Agent Leaderboard** — horizontal bar chart ranking all agents by
               cumulative tokens or cost across every stored run; rank-by and top-N
               controls mirror `zeroclaw delegations top`; falls back to a mock

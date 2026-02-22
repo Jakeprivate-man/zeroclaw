@@ -1048,6 +1048,136 @@ def render_slow_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_cost_breakdown_table(run_id: Optional[str] = None) -> None:
+    """Per-run cost breakdown table sorted by total cost descending.
+
+    Mirrors ``zeroclaw delegations cost [--run <id>]`` as an interactive
+    Streamlit dataframe. One row per stored run, sorted most-expensive first.
+    When ``run_id`` is set, only that run is shown.
+
+    Columns: # | Run | Start | Delegations | Tokens | Cost ($) | Avg/Del ($)
+
+    ``Avg/Del`` is the average cost per completed delegation (total cost
+    divided by the number of ``DelegationEnd`` events); shown as ``None``
+    when no ends are recorded.
+
+    Falls back to a synthetic mock example when no log data is present.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` aggregates all runs.
+    """
+    import pandas as pd
+
+    scope = f"[{run_id[:8]}…]" if run_id is not None else "(all runs)"
+    st.markdown(f"#### Cost Breakdown by Run {scope}")
+
+    parser = DelegationParser()
+    events = parser._read_events(run_id)
+
+    if not events:
+        st.caption("No delegation data available — showing mock example")
+        rows = [
+            {
+                "#": 1,
+                "Run": "abc12345",
+                "Start": "2026-01-02 11:00:00",
+                "Delegations": 7,
+                "Tokens": 7260,
+                "Cost ($)": 0.0237,
+                "Avg/Del ($)": 0.0034,
+            },
+            {
+                "#": 2,
+                "Run": "def67890",
+                "Start": "2026-01-01 09:30:00",
+                "Delegations": 3,
+                "Tokens": 2100,
+                "Cost ($)": 0.0074,
+                "Avg/Del ($)": 0.0025,
+            },
+        ]
+        df = pd.DataFrame(rows)
+    else:
+        # Aggregate per run_id from raw events.
+        agg: dict = {}
+        for ev in events:
+            rid = ev.get("run_id")
+            if not rid:
+                continue
+            if rid not in agg:
+                agg[rid] = {
+                    "start_time": None,
+                    "delegation_count": 0,
+                    "end_count": 0,
+                    "total_tokens": 0,
+                    "total_cost": 0.0,
+                }
+            s = agg[rid]
+            ts_str = ev.get("timestamp")
+            if ts_str:
+                try:
+                    from datetime import timezone
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    if s["start_time"] is None or ts < s["start_time"]:
+                        s["start_time"] = ts
+                except ValueError:
+                    pass
+            etype = ev.get("event_type")
+            if etype == "DelegationStart":
+                s["delegation_count"] += 1
+            elif etype == "DelegationEnd":
+                s["end_count"] += 1
+                tok = ev.get("tokens_used")
+                if tok is not None:
+                    s["total_tokens"] += int(tok)
+                cost = ev.get("cost_usd")
+                if cost is not None:
+                    s["total_cost"] += float(cost)
+
+        # Sort by total cost descending.
+        sorted_runs = sorted(
+            agg.items(), key=lambda kv: kv[1]["total_cost"], reverse=True
+        )
+
+        rows = []
+        for i, (rid, s) in enumerate(sorted_runs, start=1):
+            start_str = (
+                s["start_time"].strftime("%Y-%m-%d %H:%M:%S")
+                if s["start_time"] is not None
+                else "unknown"
+            )
+            avg = (
+                round(s["total_cost"] / s["end_count"], 6)
+                if s["end_count"] > 0 and s["total_cost"] > 0.0
+                else None
+            )
+            rows.append({
+                "#": i,
+                "Run": rid[:8],
+                "Start": start_str,
+                "Delegations": s["delegation_count"],
+                "Tokens": s["total_tokens"] if s["total_tokens"] > 0 else None,
+                "Cost ($)": round(s["total_cost"], 6) if s["total_cost"] > 0.0 else None,
+                "Avg/Del ($)": avg,
+            })
+        df = pd.DataFrame(rows)
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+            "Run": st.column_config.TextColumn("Run", width="small"),
+            "Start": st.column_config.TextColumn("Start"),
+            "Delegations": st.column_config.NumberColumn("Delegations", format="%d"),
+            "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+            "Cost ($)": st.column_config.NumberColumn("Cost ($)", format="$%.4f"),
+            "Avg/Del ($)": st.column_config.NumberColumn("Avg/Del ($)", format="$%.4f"),
+        },
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 
