@@ -19,6 +19,7 @@
 //! - [`print_active`]: list currently in-flight delegations (starts without matching ends).
 //! - [`print_agent`]: show all completed delegations for a named agent, newest first.
 //! - [`print_model`]: show all completed delegations for a named model, newest first.
+//! - [`print_provider`]: show all completed delegations for a named provider, newest first.
 //! - [`get_log_summary`]: programmatic aggregate for `zeroclaw status`.
 //!
 //! All parsing is done via `serde_json::Value` — no new dependencies.
@@ -2106,6 +2107,164 @@ pub fn print_model(log_path: &Path, model: &str, run_id: Option<&str>) -> Result
     }
 
     println!("{}", "─".repeat(99));
+    let total_tokens: u64 = ends
+        .iter()
+        .filter_map(|e| e.get("tokens_used").and_then(|x| x.as_u64()))
+        .sum();
+    let total_cost: f64 = ends
+        .iter()
+        .filter_map(|e| e.get("cost_usd").and_then(|x| x.as_f64()))
+        .sum();
+    let success_count = ends
+        .iter()
+        .filter(|e| e.get("success").and_then(|x| x.as_bool()) == Some(true))
+        .count();
+    println!(
+        "{} occurrence(s) — {} succeeded  •  {} total tokens  •  ${:.4} total cost",
+        ends.len(),
+        success_count,
+        total_tokens,
+        total_cost,
+    );
+    Ok(())
+}
+
+/// Show all completed delegations for a specific provider, newest first.
+///
+/// Filters `DelegationEnd` events whose `provider` field exactly matches
+/// `provider` (case-sensitive). When `run_id` is `Some`, only events from
+/// that run are included. Results are sorted by timestamp descending.
+///
+/// Output columns: # | run | agent | model | depth | duration | tokens | cost | ok | finished (UTC)
+///
+/// The footer prints total occurrences, success count, cumulative tokens, and
+/// cumulative cost.
+pub fn print_provider(log_path: &Path, provider: &str, run_id: Option<&str>) -> Result<()> {
+    let all_events = read_all_events(log_path)?;
+    if all_events.is_empty() {
+        println!("No delegation data found at: {}", log_path.display());
+        println!("Run ZeroClaw with a workflow that uses the `delegate` tool.");
+        return Ok(());
+    }
+
+    let events: Vec<&Value> = if let Some(rid) = run_id {
+        all_events
+            .iter()
+            .filter(|e| e.get("run_id").and_then(|x| x.as_str()) == Some(rid))
+            .collect()
+    } else {
+        all_events.iter().collect()
+    };
+
+    if events.is_empty() {
+        println!("No events found for run: {}", run_id.unwrap_or("?"));
+        return Ok(());
+    }
+
+    // Filter DelegationEnd events for this provider.
+    let mut ends: Vec<&Value> = events
+        .iter()
+        .copied()
+        .filter(|e| {
+            e.get("event_type").and_then(|x| x.as_str()) == Some("DelegationEnd")
+                && e.get("provider").and_then(|x| x.as_str()) == Some(provider)
+        })
+        .collect();
+
+    // Sort newest first.
+    ends.sort_by(|a, b| {
+        let ta = a.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
+        let tb = b.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
+        tb.cmp(ta)
+    });
+
+    let scope = run_id
+        .map(|r| format!("  (run: {r})"))
+        .unwrap_or_else(|| "  (all runs)".to_owned());
+    println!(
+        "Delegation history for provider \"{provider}\"{scope}  [{} occurrence(s)]",
+        ends.len()
+    );
+    println!();
+
+    if ends.is_empty() {
+        println!("No completed delegations found for provider \"{provider}\".");
+        return Ok(());
+    }
+
+    println!(
+        "{:>3}  {:<10}  {:<14}  {:<20}  {:>5}  {:>9}  {:>8}  {:>9}  {:>4}  {}",
+        "#", "run", "agent", "model", "depth", "duration", "tokens", "cost", "ok", "finished (UTC)"
+    );
+    println!("{}", "─".repeat(117));
+
+    for (i, ev) in ends.iter().enumerate() {
+        let run = ev
+            .get("run_id")
+            .and_then(|x| x.as_str())
+            .map(|r| r.chars().take(8).collect::<String>())
+            .unwrap_or_else(|| "?".to_owned());
+        let agent = ev
+            .get("agent_name")
+            .and_then(|x| x.as_str())
+            .unwrap_or("?")
+            .to_owned();
+        let model = ev
+            .get("model")
+            .and_then(|x| x.as_str())
+            .unwrap_or("?")
+            .to_owned();
+        let depth = ev
+            .get("depth")
+            .and_then(|x| x.as_u64())
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| "?".to_owned());
+        let duration = ev
+            .get("duration_ms")
+            .and_then(|x| x.as_u64())
+            .map(fmt_duration)
+            .unwrap_or_else(|| "—".to_owned());
+        let tokens = ev
+            .get("tokens_used")
+            .and_then(|x| x.as_u64())
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "—".to_owned());
+        let cost = ev
+            .get("cost_usd")
+            .and_then(|x| x.as_f64())
+            .map(|c| format!("${c:.4}"))
+            .unwrap_or_else(|| "—".to_owned());
+        let ok = ev
+            .get("success")
+            .and_then(|x| x.as_bool())
+            .map(|s| if s { "yes" } else { "no" })
+            .unwrap_or("?");
+        let finished = ev
+            .get("timestamp")
+            .and_then(|x| x.as_str())
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| {
+                dt.with_timezone(&Utc)
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "?".to_owned());
+        println!(
+            "{:>3}  {:<10}  {:<14}  {:<20}  {:>5}  {:>9}  {:>8}  {:>9}  {:>4}  {}",
+            i + 1,
+            run,
+            agent,
+            model,
+            depth,
+            duration,
+            tokens,
+            cost,
+            ok,
+            finished,
+        );
+    }
+
+    println!("{}", "─".repeat(117));
     let total_tokens: u64 = ends
         .iter()
         .filter_map(|e| e.get("tokens_used").and_then(|x| x.as_u64()))
@@ -4947,6 +5106,153 @@ mod tests {
         }
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         let result = print_model(&path, "claude-sonnet-4", Some("run-keep"));
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    // ── print_provider tests ─────────────────────────────────────────────────
+
+    /// Build a DelegationEnd event with explicit provider, model fields.
+    fn make_end_p(
+        run_id: &str,
+        agent: &str,
+        provider: &str,
+        model: &str,
+        depth: u32,
+        ts: &str,
+        tokens: u64,
+        cost: f64,
+        success: bool,
+    ) -> Value {
+        serde_json::json!({
+            "event_type": "DelegationEnd",
+            "run_id": run_id,
+            "agent_name": agent,
+            "provider": provider,
+            "model": model,
+            "depth": depth,
+            "duration_ms": 1000u64,
+            "success": success,
+            "tokens_used": tokens,
+            "cost_usd": cost,
+            "timestamp": ts
+        })
+    }
+
+    #[test]
+    fn print_provider_on_missing_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_provider_missing.jsonl");
+        let _ = std::fs::remove_file(&path);
+        assert!(print_provider(&path, "anthropic", None).is_ok());
+    }
+
+    #[test]
+    fn print_provider_on_empty_log_succeeds() {
+        let path = std::env::temp_dir().join("zeroclaw_test_provider_empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        assert!(print_provider(&path, "anthropic", None).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn print_provider_with_no_matching_ends_reports_empty() {
+        // Only starts — no ends, so nothing to show.
+        let path = std::env::temp_dir().join("zeroclaw_test_provider_nomatch.jsonl");
+        let lines = vec![serde_json::to_string(&make_start(
+            "run-a",
+            "research",
+            1,
+            "2026-01-01T10:00:00Z",
+        ))
+        .unwrap()];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_provider(&path, "anthropic", None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_provider_shows_matching_ends_newest_first() {
+        // Two ends for the same provider at T+1 and T+3; should show T+3 first.
+        let path = std::env::temp_dir().join("zeroclaw_test_provider_sort.jsonl");
+        let mut lines = Vec::new();
+        for (ts, run) in &[
+            ("2026-01-01T10:00:01Z", "run-a"),
+            ("2026-01-01T10:00:03Z", "run-b"),
+        ] {
+            lines.push(
+                serde_json::to_string(&make_end_p(
+                    run,
+                    "research",
+                    "anthropic",
+                    "claude-sonnet-4",
+                    1,
+                    ts,
+                    500,
+                    0.002,
+                    true,
+                ))
+                .unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_provider(&path, "anthropic", None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_provider_excludes_other_providers() {
+        // Two providers complete; querying one should exclude the other.
+        let path = std::env::temp_dir().join("zeroclaw_test_provider_exclude.jsonl");
+        let mut lines = Vec::new();
+        for (prov, model) in &[("anthropic", "claude-sonnet-4"), ("openai", "gpt-4o")] {
+            lines.push(
+                serde_json::to_string(&make_end_p(
+                    "run-a",
+                    "research",
+                    prov,
+                    model,
+                    0,
+                    "2026-01-01T10:00:05Z",
+                    100,
+                    0.001,
+                    true,
+                ))
+                .unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_provider(&path, "anthropic", None);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_provider_filters_by_run() {
+        let path = std::env::temp_dir().join("zeroclaw_test_provider_runfilter.jsonl");
+        let mut lines = Vec::new();
+        for (run, ts) in &[
+            ("run-keep", "2026-01-01T10:00:01Z"),
+            ("run-skip", "2026-01-02T10:00:01Z"),
+        ] {
+            lines.push(
+                serde_json::to_string(&make_end_p(
+                    run,
+                    "research",
+                    "anthropic",
+                    "claude-sonnet-4",
+                    1,
+                    ts,
+                    200,
+                    0.001,
+                    true,
+                ))
+                .unwrap(),
+            );
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let result = print_provider(&path, "anthropic", Some("run-keep"));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_ok());
     }
