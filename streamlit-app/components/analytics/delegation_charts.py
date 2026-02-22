@@ -2052,6 +2052,168 @@ def render_run_report_table(run_id: Optional[str] = None) -> None:
     )
 
 
+def render_depth_view_table(run_id: Optional[str] = None) -> None:
+    """Per-depth-level delegation listing table.
+
+    Mirrors ``zeroclaw delegations depth-view <level> [--run <id>]`` as an
+    interactive Streamlit dataframe. The user selects a nesting depth via a
+    number input; the table shows every completed delegation at that depth,
+    sorted newest first (timestamp descending).
+
+    Unlike the agent/model/provider history tables, depth is selected via a
+    numeric stepper (minimum 0) rather than a free-text input, since depth is
+    always a non-negative integer.
+
+    Columns: # | Run | Agent | Duration | Tokens | Cost ($) | Ok | Finished
+
+    A caption below the table summarises total occurrences, successes,
+    cumulative tokens, and cumulative cost — mirroring the CLI footer line.
+
+    Falls back to a synthetic mock example when no real data is present.
+
+    Args:
+        run_id: Optional run ID to filter. ``None`` aggregates all runs.
+    """
+    import pandas as pd
+
+    scope = f"[{run_id[:8]}…]" if run_id is not None else "(all runs)"
+    st.markdown(f"#### Depth-View Delegation History {scope}")
+
+    depth_level = int(
+        st.number_input(
+            "Depth level",
+            min_value=0,
+            value=0,
+            step=1,
+            key="depth_view_level",
+            help="Nesting depth to filter (0 = root-level, 1 = sub-delegations, …)",
+        )
+    )
+
+    parser = DelegationParser()
+    events = parser._read_events(run_id)
+
+    if not events:
+        st.caption(
+            f"No delegation data available — showing mock example for depth {depth_level}"
+        )
+        rows = [
+            {
+                "#": 1,
+                "Run": "abc12345",
+                "Agent": "research",
+                "Duration": "3200ms",
+                "Tokens": 980,
+                "Cost ($)": "$0.0029",
+                "Ok": "yes",
+                "Finished": "2026-02-22 10:30:44",
+            },
+            {
+                "#": 2,
+                "Run": "abc12345",
+                "Agent": "main",
+                "Duration": "2100ms",
+                "Tokens": 654,
+                "Cost ($)": "$0.0019",
+                "Ok": "yes",
+                "Finished": "2026-02-22 10:30:55",
+            },
+        ]
+        df = pd.DataFrame(rows)
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+                "Run": st.column_config.TextColumn("Run", width="small"),
+                "Agent": st.column_config.TextColumn("Agent", width="medium"),
+                "Duration": st.column_config.TextColumn("Duration", width="small"),
+                "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+                "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
+                "Ok": st.column_config.TextColumn("Ok", width="small"),
+                "Finished": st.column_config.TextColumn("Finished"),
+            },
+        )
+        st.caption("2 occurrence(s) — 2 succeeded • 1634 total tokens • $0.0048 total cost (mock)")
+        return
+
+    # Filter completed delegations at this depth.
+    depth_events = [
+        ev for ev in events
+        if ev.get("event_type") == "DelegationEnd"
+        and int(ev.get("depth", -1)) == depth_level
+    ]
+
+    if not depth_events:
+        st.caption(
+            f"No completed delegations found at depth {depth_level} "
+            "in the selected scope."
+        )
+        return
+
+    # Sort newest first.
+    depth_events.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+
+    rows = []
+    total_tokens = 0
+    total_cost = 0.0
+    success_count = 0
+    for i, ev in enumerate(depth_events, start=1):
+        run_prefix = (ev.get("run_id") or "")[:8]
+        agent = ev.get("agent_name", "?")
+        dur_ms = ev.get("duration_ms")
+        dur_str = f"{dur_ms}ms" if dur_ms is not None else "—"
+        tokens = int(ev.get("tokens_used") or 0)
+        cost = float(ev.get("cost_usd") or 0.0)
+        ok = ev.get("success", False)
+        ok_str = "yes" if ok else "no"
+        ts_str = ev.get("timestamp", "")
+        finished_str = "—"
+        if ts_str:
+            try:
+                finished_dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                finished_str = finished_dt.strftime("%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                pass
+        total_tokens += tokens
+        total_cost += cost
+        if ok:
+            success_count += 1
+        rows.append({
+            "#": i,
+            "Run": run_prefix,
+            "Agent": agent,
+            "Duration": dur_str,
+            "Tokens": tokens,
+            "Cost ($)": f"${cost:.4f}",
+            "Ok": ok_str,
+            "Finished": finished_str,
+        })
+
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+            "Run": st.column_config.TextColumn("Run", width="small"),
+            "Agent": st.column_config.TextColumn("Agent", width="medium"),
+            "Duration": st.column_config.TextColumn("Duration", width="small"),
+            "Tokens": st.column_config.NumberColumn("Tokens", format="%d"),
+            "Cost ($)": st.column_config.TextColumn("Cost ($)", width="small"),
+            "Ok": st.column_config.TextColumn("Ok", width="small"),
+            "Finished": st.column_config.TextColumn("Finished"),
+        },
+    )
+    n = len(depth_events)
+    st.caption(
+        f"{n} occurrence(s) — {success_count} succeeded "
+        f"• {total_tokens} total tokens • ${total_cost:.4f} total cost"
+    )
+
+
 def render_tokens_by_agent(run_id: Optional[str] = None) -> None:
     """Horizontal bar chart — cumulative tokens broken down by agent name.
 

@@ -264,6 +264,9 @@ def render() -> None:
         # Run report table — full chronological delegation report for the selected run
         delegation_charts.render_run_report_table(run_id=selected_run_id)
 
+        # Depth-view table — per-depth-level delegation listing (scoped to selected run when set)
+        delegation_charts.render_depth_view_table(run_id=selected_run_id)
+
         # Export buttons (CSV + JSONL, scoped to selected run when set)
         delegation_charts.render_export_buttons(run_id=selected_run_id)
 
@@ -400,6 +403,14 @@ def render() -> None:
               summarises total completions, success count, cumulative tokens, and
               cumulative cost; mirrors `zeroclaw delegations run <id>`; shows a mock
               example when no real log data is available for the selected run
+            - **Depth-View table** — numeric stepper selects a nesting depth (0 =
+              root-level, 1 = sub-delegations, etc.); shows every completed
+              delegation at that depth sorted newest first; columns show run prefix,
+              agent, duration, tokens, cost, ok flag, and finish timestamp; a caption
+              line below summarises total occurrences, success count, cumulative
+              tokens, and cumulative cost; mirrors `zeroclaw delegations depth-view
+              <level>`; scoped by the shared run selector; shows a mock example when
+              no real log data is available
             - **Agent Leaderboard** — horizontal bar chart ranking all agents by
               cumulative tokens or cost across every stored run; rank-by and top-N
               controls mirror `zeroclaw delegations top`; falls back to a mock
