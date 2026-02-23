@@ -30,7 +30,7 @@ def render_message_input() -> Optional[str]:
     """
     # Initialize session state if needed
     if 'chat_model' not in st.session_state:
-        st.session_state.chat_model = "glm-5"
+        st.session_state.chat_model = "claude-sonnet-4-6"
 
     if 'chat_temperature' not in st.session_state:
         st.session_state.chat_temperature = 0.7
@@ -43,13 +43,12 @@ def render_message_input() -> Optional[str]:
 
     # Model selector
     model_options = [
-        "glm-5",
-        "gpt-4",
-        "gpt-4-turbo",
-        "gpt-3.5-turbo",
-        "claude-3-opus",
-        "claude-3-sonnet",
-        "claude-3-haiku"
+        "claude-sonnet-4-6",
+        "claude-opus-4-6",
+        "claude-haiku-4-5-20251001",
+        "claude-sonnet-4-20250514",
+        "hint:search",
+        "hint:deep-research",
     ]
 
     selected_model = st.selectbox(

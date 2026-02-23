@@ -136,7 +136,7 @@ class LiveChat:
             Agent response
         """
         # Get model from settings (default to claude-sonnet-4)
-        model = st.session_state.get('selected_model', 'anthropic/claude-sonnet-4')
+        model = st.session_state.get('selected_model', 'claude-sonnet-4-6')
 
         # Execute one-shot command
         result = self.executor.execute_oneshot(
@@ -175,7 +175,7 @@ class LiveChat:
             st.metric("Messages", len(st.session_state.chat_messages))
 
         with col2:
-            model = st.session_state.get('selected_model', 'anthropic/claude-sonnet-4')
+            model = st.session_state.get('selected_model', 'claude-sonnet-4-6')
             st.metric("Model", model.split('/')[-1])
 
         with col3:
@@ -220,7 +220,7 @@ def render_streaming_chat():
 
         # Execute with streaming
         executor = st.session_state.streaming_executor
-        model = st.session_state.get('selected_model', 'anthropic/claude-sonnet-4')
+        model = st.session_state.get('selected_model', 'claude-sonnet-4-6')
 
         # Create container for streaming output
         with st.chat_message("assistant"):
