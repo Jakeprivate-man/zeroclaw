@@ -19,6 +19,7 @@ from components.chat.message_input import (
     create_message
 )
 from lib.conversation_manager import ConversationManager
+from lib.cli_executor import ZeroClawCLIExecutor
 from lib.realtime_poller import (
     RealtimePoller,
     auto_poll_in_background,
@@ -195,7 +196,7 @@ def load_conversation(conv_manager: ConversationManager, conv_id: str) -> None:
         # Load messages into session state
         st.session_state.chat_messages = conversation.get('messages', [])
         st.session_state.current_conversation_id = conv_id
-        st.session_state.chat_model = conversation.get('model', 'glm-5')
+        st.session_state.chat_model = conversation.get('model', 'claude-sonnet-4-6')
 
         st.success(f"Loaded: {conversation.get('title', 'Untitled')}")
         st.rerun()
@@ -243,49 +244,41 @@ def render_conversation_stats(conv_manager: ConversationManager) -> None:
 
 
 def handle_message_sent(message: str, poller: RealtimePoller) -> None:
-    """Handle a sent message.
+    """Handle a sent message by executing the ZeroClaw CLI.
 
     Args:
         message: Message text
         poller: Realtime poller instance
     """
-    # Show processing indicator
-    with st.spinner("Sending to agent..."):
-        # In production, this would:
-        # 1. Send message to ZeroClaw agent API
-        # 2. Wait for response
-        # 3. Add response to messages
+    model = st.session_state.get('chat_model', 'claude-sonnet-4-6')
 
-        # For now, simulate with a mock response
-        simulate_agent_response(message)
+    with st.spinner("Running agent..."):
+        try:
+            executor = ZeroClawCLIExecutor()
+            result = executor.execute_oneshot(message=message, model=model)
 
-    # Start polling for real-time updates
-    start_waiting_for_response()
+            if result['success']:
+                output = result['output'].strip() or "(no output)"
+                add_assistant_message(content=output, model=model)
+            else:
+                error_text = result.get('error', 'Unknown error').strip()
+                add_assistant_message(
+                    content=f"Agent error: {error_text}",
+                    model=model
+                )
+        except FileNotFoundError:
+            add_assistant_message(
+                content="ZeroClaw binary not found. Build it with: cargo build --release",
+                model=model
+            )
+        except Exception as e:
+            add_assistant_message(
+                content=f"Execution error: {e}",
+                model=model
+            )
 
     # Rerun to show new message
     st.rerun()
-
-
-def simulate_agent_response(user_message: str) -> None:
-    """Simulate an agent response (placeholder).
-
-    In production, this would call the actual ZeroClaw agent API.
-
-    Args:
-        user_message: The user's message
-    """
-    # Mock response for demonstration
-    response_content = f"Received your message: '{user_message[:50]}...'\n\n"
-    response_content += "This is a simulated response. In production, "
-    response_content += "this would be replaced with actual ZeroClaw agent interaction."
-
-    # Add mock assistant message
-    add_assistant_message(
-        content=response_content,
-        model=st.session_state.get('chat_model', 'glm-5'),
-        tokens=50,  # Mock token count
-        cost=0.001  # Mock cost
-    )
 
 
 def render_footer_actions(conv_manager: ConversationManager) -> None:

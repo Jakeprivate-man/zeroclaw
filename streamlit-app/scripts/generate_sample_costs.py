@@ -28,7 +28,7 @@ def generate_sample_costs(output_file: str = "~/.zeroclaw/state/costs.jsonl", nu
     # Model configurations with pricing (per million tokens)
     models = [
         {
-            "model": "anthropic/claude-sonnet-4",
+            "model": "claude-sonnet-4-6",
             "input_price": 3.0,
             "output_price": 15.0,
             "weight": 0.5  # Higher probability

@@ -44,7 +44,7 @@ class ZeroClawCLIExecutor:
         self.reader_thread: Optional[threading.Thread] = None
         self.is_streaming = False
 
-    def start_chat(self, message: str, model: str = "anthropic/claude-sonnet-4",
+    def start_chat(self, message: str, model: str = "claude-sonnet-4-6",
                    stream_callback: Optional[Callable[[str], None]] = None) -> ProcessInfo:
         """Start a chat session with ZeroClaw CLI.
 
@@ -65,8 +65,8 @@ class ZeroClawCLIExecutor:
         # Build command
         cmd = [
             self.binary_path,
-            "chat",
-            message,
+            "agent",
+            "-m", message,
             "--model", model
         ]
 
@@ -240,7 +240,7 @@ class ZeroClawCLIExecutor:
             logger.error(f"Error reading output: {e}")
             self.error_queue.put(f"Error reading output: {e}")
 
-    def execute_oneshot(self, message: str, model: str = "anthropic/claude-sonnet-4",
+    def execute_oneshot(self, message: str, model: str = "claude-sonnet-4-6",
                         timeout: int = 120) -> Dict[str, Any]:
         """Execute a single message and wait for response.
 
@@ -254,8 +254,8 @@ class ZeroClawCLIExecutor:
         """
         cmd = [
             self.binary_path,
-            "chat",
-            message,
+            "agent",
+            "-m", message,
             "--model", model
         ]
 

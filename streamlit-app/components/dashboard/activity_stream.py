@@ -8,7 +8,6 @@ and status updates in a Matrix Green themed interface.
 import streamlit as st
 from datetime import datetime
 from lib.session_state import get_state, add_activity
-from lib.mock_data import generate_mock_activity
 
 
 def render():
@@ -48,22 +47,11 @@ def render():
     # Scrollable container
     with st.container(height=500, border=True):
         if len(filtered_activities) == 0:
-            st.caption("No activities to display")
+            st.info("No activity yet -- actions performed in Quick Actions will appear here.")
         else:
             # Reverse to show newest first
             for activity in reversed(filtered_activities[-50:]):  # Last 50
                 render_activity_item(activity)
-
-    # Generate mock activity (for testing)
-    if st.button("+ Generate Test Activity", key="gen_activity"):
-        new_activity = generate_mock_activity()
-        add_activity(
-            activity_type=new_activity['type'],
-            message=new_activity['message'],
-            icon=new_activity['icon'],
-            metadata=new_activity.get('metadata', {})
-        )
-        st.rerun()
 
 
 def render_activity_item(activity):

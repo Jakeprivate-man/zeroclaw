@@ -75,48 +75,15 @@ class RealtimePoller:
         return (now - last_check) >= interval
 
     def poll_for_updates(self) -> bool:
-        """Poll for new messages from agent.
+        """No-op: CLI execution is synchronous.
 
-        This is a placeholder implementation. In production, this would:
-        1. Check ZeroClaw agent API for new messages
-        2. Compare with existing messages
-        3. Append new messages to session state
-        4. Return True if updates found
+        The ZeroClaw CLI executor runs commands synchronously via
+        execute_oneshot(), so responses are available immediately
+        after execution. No polling is needed.
 
         Returns:
-            True if new messages were found, False otherwise
+            Always False (no asynchronous updates to poll for)
         """
-        if not self.should_poll_now():
-            return False
-
-        # Update last check time
-        st.session_state.chat_last_check = time.time()
-
-        # In a real implementation, you would:
-        # 1. Call ZeroClaw agent API
-        # 2. Get latest messages
-        # 3. Compare with current messages
-        # 4. Append new ones
-
-        # For now, just a placeholder
-        # If waiting for response, simulate getting one (mock behavior)
-        if st.session_state.get('chat_waiting_for_response', False):
-            # This would be replaced with actual API call
-            # For demonstration purposes only
-            return self._check_for_agent_response()
-
-        return False
-
-    def _check_for_agent_response(self) -> bool:
-        """Check if agent has responded (placeholder).
-
-        In production, this would check the ZeroClaw agent API.
-
-        Returns:
-            True if response found, False otherwise
-        """
-        # Placeholder: No actual checking yet
-        # Real implementation would call agent API here
         return False
 
     def mark_waiting_for_response(self) -> None:

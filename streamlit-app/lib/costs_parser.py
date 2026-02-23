@@ -7,7 +7,7 @@ Each line in the file is a JSON record representing a single API request:
 {
     "id": "uuid",
     "session_id": "uuid",
-    "model": "anthropic/claude-sonnet-4",
+    "model": "claude-sonnet-4-6",
     "input_tokens": 1234,
     "output_tokens": 567,
     "total_tokens": 1801,

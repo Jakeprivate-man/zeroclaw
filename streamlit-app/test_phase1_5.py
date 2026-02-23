@@ -90,7 +90,7 @@ def test_conversation_manager():
             conv_id = manager.save_conversation(
                 messages=messages,
                 title="Test Conversation",
-                model="glm-5"
+                model="claude-sonnet-4-6"
             )
 
             print(f"✓ Saved conversation: {conv_id[:8]}...")
@@ -142,7 +142,7 @@ def test_message_creation():
         msg = create_message(
             role="user",
             content="Test message",
-            model="glm-5",
+            model="claude-sonnet-4-6",
             temperature=0.7
         )
 

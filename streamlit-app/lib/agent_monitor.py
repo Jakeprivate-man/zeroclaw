@@ -55,7 +55,7 @@ class AgentMonitor:
         """
         return {
             "default_provider": "openrouter",
-            "default_model": "anthropic/claude-sonnet-4",
+            "default_model": "claude-sonnet-4-6",
             "default_temperature": 0.7,
             "agents": {}
         }
@@ -77,7 +77,7 @@ class AgentMonitor:
         return {
             "name": "default",
             "provider": self.config.get("default_provider", "openrouter"),
-            "model": self.config.get("default_model", "anthropic/claude-sonnet-4"),
+            "model": self.config.get("default_model", "claude-sonnet-4-6"),
             "temperature": self.config.get("default_temperature", 0.7),
             "status": "configured",
             "is_default": True

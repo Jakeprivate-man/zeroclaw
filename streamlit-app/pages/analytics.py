@@ -12,7 +12,8 @@ import streamlit as st
 from components import analytics
 from components.analytics import delegation_charts
 from components.dashboard import delegation_tree
-from lib.session_state import get_state, set_state
+from lib.delegation_parser import DelegationParser
+from lib.session_state import set_state
 
 
 def render() -> None:
@@ -48,40 +49,47 @@ def render() -> None:
         # Placeholder for export functionality
         st.button("Export", disabled=True, help="Export functionality coming soon")
 
-    # Summary metrics row
+    # Summary metrics row — derived from real delegation data
+    parser = DelegationParser()
+    all_events = parser._read_events()
+    starts = [e for e in all_events if e.get("event_type") == "DelegationStart"]
+    ends = [e for e in all_events if e.get("event_type") == "DelegationEnd"]
+    total_delegations = len(starts)
+    failed_count = sum(1 for e in ends if not e.get("success", True))
+    durations = [e["duration_ms"] for e in ends if e.get("duration_ms") is not None]
+    avg_duration = round(sum(durations) / len(durations)) if durations else 0
+    error_rate = round((failed_count / len(ends)) * 100, 1) if ends else 0.0
+    distinct_runs = len(set(e.get("run_id") for e in starts if e.get("run_id")))
+
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         st.metric(
-            label="Total Requests",
-            value="12,543",
-            delta="8.2%",
-            help="Total number of requests in selected time range"
+            label="Total Delegations",
+            value=f"{total_delegations:,}",
+            help="Total delegation invocations recorded in delegation.jsonl"
         )
 
     with col2:
         st.metric(
-            label="Avg Response",
-            value="234ms",
-            delta="-12ms",
-            help="Average response time across all requests"
+            label="Avg Duration",
+            value=f"{avg_duration:,}ms" if durations else "N/A",
+            help="Average delegation duration across all completed delegations"
         )
 
     with col3:
         st.metric(
             label="Error Rate",
-            value="2.1%",
-            delta="-0.3%",
+            value=f"{error_rate}%",
             delta_color="inverse",
-            help="Percentage of failed requests"
+            help="Percentage of delegations that failed (success=false)"
         )
 
     with col4:
         st.metric(
-            label="Active Users",
-            value="1,234",
-            delta="45",
-            help="Number of active users in selected time range"
+            label="Runs",
+            value=f"{distinct_runs:,}",
+            help="Number of distinct ZeroClaw process invocations (run_id)"
         )
 
     # Divider between metrics and charts
@@ -96,10 +104,10 @@ def render() -> None:
         "Delegations"
     ])
 
-    # Overview Tab: Request patterns and distribution
+    # Overview Tab: Delegation patterns and distribution
     with tab1:
-        st.markdown("### Request Overview")
-        st.caption("Monitor request volume trends and distribution across categories")
+        st.markdown("### Delegation Overview")
+        st.caption("Monitor agent invocation trends and delegation distribution")
 
         col1, col2 = st.columns(2)
 
@@ -109,10 +117,10 @@ def render() -> None:
         with col2:
             analytics.request_distribution_chart()
 
-    # Performance Tab: Response time and latency metrics
+    # Performance Tab: Delegation duration and latency metrics
     with tab2:
         st.markdown("### Performance Metrics")
-        st.caption("Analyze response times and latency percentiles across services")
+        st.caption("Analyze delegation durations and latency percentiles by agent")
 
         col1, col2 = st.columns(2)
 
@@ -122,10 +130,10 @@ def render() -> None:
         with col2:
             analytics.performance_metrics_chart()
 
-    # Errors Tab: Error rates and type breakdown
+    # Errors Tab: Delegation error rates and breakdown
     with tab3:
         st.markdown("### Error Analysis")
-        st.caption("Track error rates over time and analyze error type distribution")
+        st.caption("Track delegation error rates over time and analyze failure patterns")
 
         col1, col2 = st.columns(2)
 
@@ -135,10 +143,10 @@ def render() -> None:
         with col2:
             analytics.error_types_chart()
 
-    # Usage Tab: User activity and feature adoption
+    # Usage Tab: User activity and feature usage (not available)
     with tab4:
         st.markdown("### Usage Analytics")
-        st.caption("Monitor user activity trends and feature usage patterns")
+        st.caption("User activity and feature usage metrics (requires gateway telemetry)")
 
         col1, col2 = st.columns(2)
 

@@ -1,129 +1,90 @@
 """Response Time Chart Component.
 
-This module provides an interactive Plotly chart showing response time metrics over time,
-including average, p50, p95, and p99 percentiles. Uses Matrix Green theme colors.
+Shows delegation duration over time, derived from real DelegationEnd events
+in ~/.zeroclaw/state/delegation.jsonl. Displays an honest empty state when
+no duration data is available.
 """
 
 import streamlit as st
 import plotly.graph_objects as go
-from lib.session_state import get_state
-from lib.mock_data import generate_response_time_data
+from lib.delegation_parser import DelegationParser
 
 
 def render() -> None:
-    """Render response time chart with percentile breakdown.
+    """Render delegation duration chart from real data.
 
-    Displays an interactive line chart showing:
-    - Average response time (primary green line)
-    - p50 (median) response time (sea green line)
-    - p95 response time (yellow line for warning threshold)
-    - p99 response time (red line for critical threshold)
-
-    Time range is controlled by session state 'time_range' variable.
-    Uses Matrix Green theme colors (#5FAF87, #87D7AF) with preserved
-    yellow (#F1FA8C) for p95 and red (#FF5555) for p99.
+    Reads DelegationEnd events with duration_ms and plots them over time.
+    Falls back to an informative empty state when no data is present.
     """
-    # Get time range from session state (default: 7d)
-    time_range = get_state('time_range', '7d')
+    parser = DelegationParser()
+    events = parser._read_events()
 
-    # Generate mock data for the selected time range
-    data = generate_response_time_data(time_range)
+    ends = [
+        e for e in events
+        if e.get("event_type") == "DelegationEnd" and e.get("duration_ms") is not None
+    ]
 
-    # Create Plotly figure
+    if not ends:
+        st.info(
+            "Duration data not available in current log. "
+            "Run ZeroClaw with agent delegation workflows to populate this chart."
+        )
+        return
+
+    # Sort by timestamp
+    def _ts_key(e):
+        ts = parser._parse_timestamp(e.get("timestamp"))
+        return ts if ts else parser._parse_timestamp("1970-01-01T00:00:00Z")
+
+    ends.sort(key=_ts_key)
+
+    timestamps = []
+    durations = []
+    agents = []
+    for e in ends:
+        ts = parser._parse_timestamp(e.get("timestamp"))
+        if ts:
+            timestamps.append(ts.strftime("%Y-%m-%d %H:%M:%S"))
+            durations.append(e["duration_ms"])
+            agents.append(e.get("agent_name", "unknown"))
+
+    if not timestamps:
+        st.info("Duration data not available in current log format.")
+        return
+
     fig = go.Figure()
 
-    # Add average response time line (Matrix Green primary color)
     fig.add_trace(go.Scatter(
-        x=[d['date'] for d in data],
-        y=[d['avg'] for d in data],
-        name='Average',
-        line=dict(color='#5FAF87', width=2),
-        mode='lines+markers',
+        x=timestamps,
+        y=durations,
+        name="Duration",
+        line=dict(color="#5FAF87", width=2),
+        mode="lines+markers",
         marker=dict(size=6),
-        hovertemplate='<b>Average</b><br>' +
-                      'Date: %{x}<br>' +
-                      'Response Time: %{y}ms<br>' +
-                      '<extra></extra>'
+        text=agents,
+        hovertemplate=(
+            "<b>%{text}</b><br>"
+            "Time: %{x}<br>"
+            "Duration: %{y}ms<br>"
+            "<extra></extra>"
+        ),
     ))
 
-    # Add p50 (median) response time line (Sea green)
-    fig.add_trace(go.Scatter(
-        x=[d['date'] for d in data],
-        y=[d['p50'] for d in data],
-        name='p50 (Median)',
-        line=dict(color='#87D7AF', width=2),
-        mode='lines+markers',
-        marker=dict(size=6),
-        hovertemplate='<b>p50 (Median)</b><br>' +
-                      'Date: %{x}<br>' +
-                      'Response Time: %{y}ms<br>' +
-                      '<extra></extra>'
-    ))
-
-    # Add p95 response time line (Yellow for warning)
-    fig.add_trace(go.Scatter(
-        x=[d['date'] for d in data],
-        y=[d['p95'] for d in data],
-        name='p95',
-        line=dict(color='#F1FA8C', width=2),
-        mode='lines+markers',
-        marker=dict(size=6),
-        hovertemplate='<b>p95</b><br>' +
-                      'Date: %{x}<br>' +
-                      'Response Time: %{y}ms<br>' +
-                      '<extra></extra>'
-    ))
-
-    # Add p99 response time line (Red for critical)
-    fig.add_trace(go.Scatter(
-        x=[d['date'] for d in data],
-        y=[d['p99'] for d in data],
-        name='p99',
-        line=dict(color='#FF5555', width=2),
-        mode='lines+markers',
-        marker=dict(size=6),
-        hovertemplate='<b>p99</b><br>' +
-                      'Date: %{x}<br>' +
-                      'Response Time: %{y}ms<br>' +
-                      '<extra></extra>'
-    ))
-
-    # Update layout with Matrix Green theme
     fig.update_layout(
-        title={
-            'text': "Response Time Percentiles Over Time",
-            'font': {'size': 20, 'color': '#87D7AF'}
-        },
+        title={"text": "Delegation Duration Over Time", "font": {"size": 20, "color": "#87D7AF"}},
         template="plotly_dark",
         paper_bgcolor="#000000",
         plot_bgcolor="#000000",
         font=dict(color="#87D7AF", family="monospace"),
-        xaxis=dict(
-            title="Date",
-            showgrid=True,
-            gridcolor='#1a1a1a',
-            linecolor='#5FAF87'
-        ),
-        yaxis=dict(
-            title="Response Time (ms)",
-            showgrid=True,
-            gridcolor='#1a1a1a',
-            linecolor='#5FAF87'
-        ),
+        xaxis=dict(title="Time", showgrid=True, gridcolor="#1a1a1a", linecolor="#5FAF87"),
+        yaxis=dict(title="Duration (ms)", showgrid=True, gridcolor="#1a1a1a", linecolor="#5FAF87"),
         height=400,
-        hovermode='x unified',
+        hovermode="x unified",
         legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1,
-            bgcolor="rgba(0,0,0,0.5)",
-            bordercolor="#5FAF87",
-            borderwidth=1
+            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+            bgcolor="rgba(0,0,0,0.5)", bordercolor="#5FAF87", borderwidth=1,
         ),
-        margin=dict(l=50, r=50, t=80, b=50)
+        margin=dict(l=50, r=50, t=80, b=50),
     )
 
-    # Display chart in Streamlit
     st.plotly_chart(fig, use_container_width=True)

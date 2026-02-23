@@ -84,17 +84,10 @@ def render():
             if not data_source:
                 st.error("❌ Please provide a data source")
             else:
-                st.success(f"✅ Analysis started for: {data_source}")
-                st.info(f"""
-                **Configuration:**
-                - Type: {analysis_type}
-                - Format: {output_format}
-                - Visualizations: {'Yes' if include_visualizations else 'No'}
-                - Summary: {'Yes' if include_summary else 'No'}
-                - Depth: {max_depth}/10
-
-                **Status:** Processing... (placeholder)
-                """)
+                st.info(
+                    "Analysis submission is not yet connected to the ZeroClaw backend. "
+                    "This feature is coming soon."
+                )
 
                 # Add activity to stream
                 add_activity(
